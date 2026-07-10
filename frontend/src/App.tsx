@@ -5,71 +5,175 @@ import ChatInput from "./components/ChatInput";
 import Live2DCanvas from "./components/Live2DCanvas";
 import MoodDisplay from "./components/MoodDisplay";
 import SettingsPanel from "./components/SettingsPanel";
-import { streamChat } from "./api";
-import type { PersonaSettings } from "./api";
+import {
+  streamChat,
+  streamProactive,
+  moodDecay,
+  getCharacters,
+  getCharacterDetail,
+  createCharacter,
+  updateCharacter,
+  deleteCharacter,
+  clearConversation,
+} from "./api";
+import type { Character } from "./api";
 
-const DEFAULT_MODEL_URL = "/live2d/haru/Haru.model3.json";
-const SESSION_ID = "session-" + Math.random().toString(36).slice(2);
-
-const DEFAULT_PERSONA: PersonaSettings = {
-  name: "小念",
-  personalityTemplate: "gentle",
-  customPersonality: "",
-};
-
-// localStorage 读写
-function loadPersona(): PersonaSettings {
-  try {
-    const saved = localStorage.getItem("persona");
-    if (saved) return { ...DEFAULT_PERSONA, ...JSON.parse(saved) };
-  } catch {}
-  return DEFAULT_PERSONA;
-}
-
-function loadModelUrl(): string {
-  return localStorage.getItem("modelUrl") || DEFAULT_MODEL_URL;
-}
+// 默认分栏比例（Live2D 占比）
+const DEFAULT_SPLIT_RATIO = 0.55;
+// 主动消息触发时长（毫秒）：5 分钟无消息
+const PROACTIVE_DELAY = 5 * 60 * 1000;
+// 心情衰减间隔（毫秒）：每 3 分钟
+const MOOD_DECAY_INTERVAL = 3 * 60 * 1000;
+// 主动消息定时器检查间隔
+const TIMER_CHECK_INTERVAL = 30 * 1000;
 
 function loadSplitRatio(): number {
   const saved = localStorage.getItem("splitRatio");
   const n = saved ? parseFloat(saved) : NaN;
   if (!isNaN(n) && n >= 0.2 && n <= 0.8) return n;
-  return 0.55; // 默认 Live2D 占 55%
+  return DEFAULT_SPLIT_RATIO;
 }
 
 export default function App() {
-  const [messages, setMessages] = useState<Message[]>([
-    { role: "assistant", content: "亲爱的你来啦～今天过得怎么样呀？" },
-  ]);
+  // ========== 角色列表与当前角色 ==========
+  const [characters, setCharacters] = useState<Character[]>([]);
+  const [currentCharacter, setCurrentCharacter] = useState<Character | null>(null);
+  const [charSelectorOpen, setCharSelectorOpen] = useState(false);
+  const [loadingChars, setLoadingChars] = useState(true);
+
+  // ========== 聊天状态 ==========
+  const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
   const [mood, setMood] = useState(60);
+  const [emotion, setEmotion] = useState<string | null>(null);
+
+  // ========== UI 状态 ==========
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [persona, setPersona] = useState<PersonaSettings>(loadPersona);
-  const [modelUrl, setModelUrl] = useState<string>(loadModelUrl);
   const [splitRatio, setSplitRatio] = useState(loadSplitRatio);
 
-  // 用于流式接收时追踪是否已开始 assistant 消息
+  // 流式消息追踪
   const assistantStartedRef = useRef(false);
 
-  // 持久化设置
-  useEffect(() => {
-    localStorage.setItem("persona", JSON.stringify(persona));
-  }, [persona]);
-  useEffect(() => {
-    localStorage.setItem("modelUrl", modelUrl);
-  }, [modelUrl]);
-  useEffect(() => {
-    localStorage.setItem("splitRatio", String(splitRatio));
-  }, [splitRatio]);
+  // 用户最后活动时间（发消息/切换角色）
+  const lastActivityRef = useRef<number>(Date.now());
+  // 是否处于"主动消息已发，等待用户回复"状态
+  const proactiveActiveRef = useRef<boolean>(false);
 
-  const handleSend = async (text: string) => {
-    setMessages((prev) => [...prev, { role: "user", content: text }]);
-    setLoading(true);
-    assistantStartedRef.current = false;
+  // ========== 初始化：加载角色列表 ==========
+  useEffect(() => {
+    (async () => {
+      try {
+        let list = await getCharacters();
+        if (list.length === 0) {
+          // 自动创建默认角色
+          const def = await createCharacter({
+            name: "小念",
+            personalityTemplate: "gentle",
+            customPersonality: "",
+            modelUrl: "/live2d/icegirl/IceGirl.model3.json",
+          });
+          list = [def];
+        }
+        setCharacters(list);
+        // 默认选第一个
+        await selectCharacter(list[0].id, list);
+      } catch (e) {
+        console.error("[App] 初始化失败:", e);
+      } finally {
+        setLoadingChars(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
+  // ========== 切换角色 ==========
+  const selectCharacter = async (id: string, list?: Character[]) => {
     try {
-      await streamChat(text, SESSION_ID, persona, {
-        onMood: (m) => setMood(m),
+      const detail = await getCharacterDetail(id);
+      const char = list?.find((c) => c.id === id) || detail.character;
+      setCurrentCharacter(char);
+      setMood(char.mood);
+      setEmotion(null);
+      // 加载对话历史
+      const histMessages: Message[] = detail.conversation.messages
+        .filter((m) => m.role === "user" || m.role === "assistant")
+        .map((m) => ({
+          role: m.role as "user" | "assistant",
+          content: m.content,
+        }));
+      if (histMessages.length === 0) {
+        setMessages([
+          { role: "assistant", content: `亲爱的你来啦～我是${char.name}，今天过得怎么样呀？` },
+        ]);
+      } else {
+        setMessages(histMessages);
+      }
+      // 重置活动时间和主动消息状态
+      lastActivityRef.current = Date.now();
+      proactiveActiveRef.current = false;
+      setCharSelectorOpen(false);
+    } catch (e) {
+      console.error("[App] 切换角色失败:", e);
+    }
+  };
+
+  // ========== 主动消息定时器 ==========
+  useEffect(() => {
+    if (!currentCharacter) return;
+
+    const proactiveTimer = window.setInterval(() => {
+      const elapsed = Date.now() - lastActivityRef.current;
+      if (elapsed >= PROACTIVE_DELAY && !proactiveActiveRef.current && !loading) {
+        proactiveActiveRef.current = true;
+        triggerProactive();
+      }
+    }, TIMER_CHECK_INTERVAL);
+
+    // 心情衰减定时器
+    const decayTimer = window.setInterval(() => {
+      if (proactiveActiveRef.current && currentCharacter && !loading) {
+        moodDecay(currentCharacter.id)
+          .then((data) => {
+            setMood(data.mood);
+            // 同步更新角色列表中的心情
+            setCharacters((prev) =>
+              prev.map((c) =>
+                c.id === currentCharacter.id ? { ...c, mood: data.mood } : c
+              )
+            );
+            setCurrentCharacter((prev) =>
+              prev ? { ...prev, mood: data.mood } : prev
+            );
+            console.log(`[mood-decay] ${data.mood} (${data.level})`);
+          })
+          .catch((e) => console.error("[mood-decay] 失败:", e));
+      }
+    }, MOOD_DECAY_INTERVAL);
+
+    return () => {
+      clearInterval(proactiveTimer);
+      clearInterval(decayTimer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentCharacter, loading]);
+
+  // ========== AI 主动发消息 ==========
+  const triggerProactive = async () => {
+    if (!currentCharacter) return;
+    assistantStartedRef.current = false;
+    setLoading(true);
+    try {
+      await streamProactive(currentCharacter.id, {
+        onMood: (m) => {
+          setMood(m);
+          setCharacters((prev) =>
+            prev.map((c) =>
+              c.id === currentCharacter.id ? { ...c, mood: m } : c
+            )
+          );
+          setCurrentCharacter((prev) => (prev ? { ...prev, mood: m } : prev));
+        },
+        onEmotion: (emo) => setEmotion(emo),
         onText: (chunk) => {
           if (!assistantStartedRef.current) {
             assistantStartedRef.current = true;
@@ -77,9 +181,7 @@ export default function App() {
               ...prev,
               { role: "assistant", content: chunk },
             ]);
-            setLoading(false);
           } else {
-            // 追加到最后一条 assistant 消息
             setMessages((prev) => {
               const last = prev[prev.length - 1];
               if (last && last.role === "assistant") {
@@ -92,9 +194,65 @@ export default function App() {
             });
           }
         },
-        onDone: () => {
+        onDone: () => setLoading(false),
+        onError: (err) => {
           setLoading(false);
+          setMessages((prev) => [
+            ...prev,
+            { role: "assistant", content: `（${err}）` },
+          ]);
         },
+      });
+    } catch {
+      setLoading(false);
+    }
+  };
+
+  // ========== 发送消息 ==========
+  const handleSend = async (text: string) => {
+    if (!currentCharacter) return;
+    // 用户发消息 → 重置定时器状态
+    lastActivityRef.current = Date.now();
+    proactiveActiveRef.current = false;
+
+    setMessages((prev) => [...prev, { role: "user", content: text }]);
+    setLoading(true);
+    assistantStartedRef.current = false;
+
+    try {
+      await streamChat(text, currentCharacter.id, {
+        onMood: (m) => {
+          setMood(m);
+          setCharacters((prev) =>
+            prev.map((c) =>
+              c.id === currentCharacter.id ? { ...c, mood: m } : c
+            )
+          );
+          setCurrentCharacter((prev) => (prev ? { ...prev, mood: m } : prev));
+        },
+        onEmotion: (emo) => setEmotion(emo),
+        onText: (chunk) => {
+          if (!assistantStartedRef.current) {
+            assistantStartedRef.current = true;
+            setMessages((prev) => [
+              ...prev,
+              { role: "assistant", content: chunk },
+            ]);
+            setLoading(false);
+          } else {
+            setMessages((prev) => {
+              const last = prev[prev.length - 1];
+              if (last && last.role === "assistant") {
+                return [
+                  ...prev.slice(0, -1),
+                  { role: "assistant", content: last.content + chunk },
+                ];
+              }
+              return prev;
+            });
+          }
+        },
+        onDone: () => setLoading(false),
         onError: (err) => {
           setLoading(false);
           setMessages((prev) => [
@@ -111,6 +269,101 @@ export default function App() {
           { role: "assistant", content: "（网络开小差了，再说一次好吗～）" },
         ]);
       }
+    }
+  };
+
+  // ========== Live2D 位置持久化（防抖保存）==========
+  const positionSaveTimerRef = useRef<number | null>(null);
+  const handlePositionChange = useCallback(
+    (pos: { x: number; y: number; scale: number }) => {
+      if (!currentCharacter) return;
+      // 立即更新本地状态
+      setCurrentCharacter((prev) =>
+        prev ? { ...prev, live2dPosition: pos } : prev
+      );
+      // 防抖保存到后端
+      if (positionSaveTimerRef.current) {
+        clearTimeout(positionSaveTimerRef.current);
+      }
+      positionSaveTimerRef.current = window.setTimeout(() => {
+        if (currentCharacter) {
+          updateCharacter(currentCharacter.id, { live2dPosition: pos }).catch(
+            (e) => console.error("[position] 保存失败:", e)
+          );
+        }
+      }, 500);
+    },
+    [currentCharacter]
+  );
+
+  // ========== 角色更新回调（SettingsPanel 保存后）==========
+  const handleCharacterUpdated = (updated: Character) => {
+    setCharacters((prev) =>
+      prev.map((c) => (c.id === updated.id ? updated : c))
+    );
+    setCurrentCharacter(updated);
+    setMood(updated.mood);
+  };
+
+  // ========== 清空记忆回调 ==========
+  const handleMemoryCleared = () => {
+    setMessages([
+      { role: "assistant", content: "嗯…感觉脑袋清爽多了，我们重新开始吧～" },
+    ]);
+    setMood(60);
+    setEmotion(null);
+    lastActivityRef.current = Date.now();
+    proactiveActiveRef.current = false;
+  };
+
+  // ========== 清空当前聊天记录 ==========
+  const handleClearChat = async () => {
+    if (!currentCharacter) return;
+    if (!confirm("确定要清空当前聊天记录吗？此操作不可恢复。")) return;
+    try {
+      await clearConversation(currentCharacter.id);
+      handleMemoryCleared();
+    } catch (e) {
+      console.error("[App] 清空聊天记录失败:", e);
+      alert("清空聊天记录失败");
+    }
+  };
+
+  // ========== 创建新角色 ==========
+  const handleCreateCharacter = async () => {
+    try {
+      const newChar = await createCharacter({
+        name: "新角色",
+        personalityTemplate: "gentle",
+        customPersonality: "",
+        modelUrl: "/live2d/icegirl/IceGirl.model3.json",
+      });
+      setCharacters((prev) => [...prev, newChar]);
+      await selectCharacter(newChar.id, [...characters, newChar]);
+      // 自动打开设置面板让用户编辑
+      setSettingsOpen(true);
+    } catch (e) {
+      console.error("[App] 创建角色失败:", e);
+      alert("创建角色失败");
+    }
+  };
+
+  // ========== 删除角色 ==========
+  const handleDeleteCharacter = async (id: string) => {
+    if (characters.length <= 1) {
+      alert("至少需要保留一个角色");
+      return;
+    }
+    if (!confirm("确定要删除这个角色吗？她的所有记忆都会消失。")) return;
+    try {
+      await deleteCharacter(id);
+      const remaining = characters.filter((c) => c.id !== id);
+      setCharacters(remaining);
+      if (currentCharacter?.id === id) {
+        await selectCharacter(remaining[0].id, remaining);
+      }
+    } catch (e) {
+      console.error("[App] 删除角色失败:", e);
     }
   };
 
@@ -147,11 +400,94 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    localStorage.setItem("splitRatio", String(splitRatio));
+  }, [splitRatio]);
+
+  // ========== 加载中 ==========
+  if (loadingChars) {
+    return (
+      <div className="app-loading">
+        <div className="app-loading-text">加载中…</div>
+      </div>
+    );
+  }
+
   return (
     <div className="app" ref={containerRef}>
       {/* 左侧：Live2D 立绘区 */}
       <div className="stage" style={{ flex: splitRatio }}>
-        <Live2DCanvas modelUrl={modelUrl} mood={mood} />
+        {/* 立绘顶部栏：角色选择器 */}
+        <div className="stage-topbar">
+          <div className="character-selector">
+            <button
+              className="character-selector-btn"
+              onClick={() => setCharSelectorOpen((v) => !v)}
+            >
+              <span className="status-dot" />
+              <span className="character-selector-name">
+                {currentCharacter?.name || "未选择"}
+              </span>
+              <span className="selector-arrow">{charSelectorOpen ? "▲" : "▼"}</span>
+            </button>
+            {charSelectorOpen && (
+              <>
+                {/* 点击遮罩关闭下拉 */}
+                <div className="dropdown-backdrop" onClick={() => setCharSelectorOpen(false)} />
+                <div className="character-dropdown">
+                  {characters.map((c) => (
+                    <div
+                      key={c.id}
+                      className={`character-item${
+                        c.id === currentCharacter?.id ? " active" : ""
+                      }`}
+                      onClick={() => selectCharacter(c.id, characters)}
+                    >
+                      <span className="character-avatar">
+                        {c.name.charAt(0)}
+                      </span>
+                      <span className="character-item-name">{c.name}</span>
+                      <span className="character-item-mood">{c.mood}</span>
+                      {characters.length > 1 && (
+                        <button
+                          className="character-item-delete"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteCharacter(c.id);
+                          }}
+                          title="删除"
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  <div
+                    className="character-item create-new"
+                    onClick={handleCreateCharacter}
+                  >
+                    + 新建角色
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Live2D 画布 */}
+        <div className="stage-canvas">
+          {currentCharacter && (
+            <Live2DCanvas
+              modelUrl={currentCharacter.modelUrl}
+              mood={mood}
+              emotion={emotion}
+              position={currentCharacter.live2dPosition}
+              onPositionChange={handlePositionChange}
+            />
+          )}
+        </div>
+
+        {/* 心情浮层 */}
         <div className="mood-overlay">
           <MoodDisplay mood={mood} />
         </div>
@@ -164,29 +500,52 @@ export default function App() {
 
       {/* 右侧：聊天区 */}
       <div className="chat-panel" style={{ flex: 1 - splitRatio }}>
+        {/* 聊天头部：状态栏 */}
         <div className="chat-header">
-          <span className="status-dot" />
-          {persona.name}
-          <button
-            className="settings-trigger"
-            onClick={() => setSettingsOpen(true)}
-            title="设置"
-          >
-            ⚙
-          </button>
+          <span className="chat-header-title">
+            <span className="status-dot" />
+            {currentCharacter?.name || ""}
+          </span>
+          <div className="chat-header-actions">
+            <button
+              className="chat-clear-btn"
+              onClick={handleClearChat}
+              title="清空聊天记录"
+              disabled={loading || messages.length <= 1}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 6 5 6 21 6" />
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                <line x1="10" y1="11" x2="10" y2="17" />
+                <line x1="14" y1="11" x2="14" y2="17" />
+              </svg>
+            </button>
+            <button
+              className="settings-trigger"
+              onClick={() => setSettingsOpen(true)}
+              title="设置"
+            >
+              ⚙
+            </button>
+          </div>
         </div>
-        <ChatWindow messages={messages} loading={loading} />
-        <ChatInput onSend={handleSend} disabled={loading} />
+        <ChatWindow
+          messages={messages}
+          loading={loading}
+          characterName={currentCharacter?.name}
+        />
+        <ChatInput onSend={handleSend} disabled={loading || !currentCharacter} />
       </div>
 
-      <SettingsPanel
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        persona={persona}
-        onPersonaChange={setPersona}
-        currentModelUrl={modelUrl}
-        onModelChange={setModelUrl}
-      />
+      {currentCharacter && (
+        <SettingsPanel
+          open={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+          character={currentCharacter}
+          onCharacterUpdated={handleCharacterUpdated}
+          onMemoryCleared={handleMemoryCleared}
+        />
+      )}
     </div>
   );
 }

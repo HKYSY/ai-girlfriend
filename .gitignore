@@ -29,3 +29,6 @@ Thumbs.db
 
 # 用户上传的 Live2D 模型
 backend/uploads/
+
+# 用户数据（角色、对话记录）
+backend/data/

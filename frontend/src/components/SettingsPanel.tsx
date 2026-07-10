@@ -1,17 +1,16 @@
 import { useState, useEffect, useRef } from "react";
-import type { PersonaSettings, Live2DModelInfo } from "../api";
-import { getModels, uploadModel } from "../api";
+import type { Character, Live2DModelInfo, PresetModel } from "../api";
+import { getModels, getPresetModels, uploadModel, updateCharacter, clearConversation } from "../api";
 
 interface SettingsPanelProps {
   open: boolean;
   onClose: () => void;
-  persona: PersonaSettings;
-  onPersonaChange: (p: PersonaSettings) => void;
-  currentModelUrl: string;
-  onModelChange: (url: string) => void;
+  character: Character | null;
+  onCharacterUpdated: (char: Character) => void;
+  onMemoryCleared: () => void;
 }
 
-const DEFAULT_MODEL_URL = "/live2d/haru/Haru.model3.json";
+const DEFAULT_MODEL_URL = "/live2d/icegirl/IceGirl.model3.json";
 
 const TEMPLATE_LABELS: Record<string, string> = {
   gentle: "温柔",
@@ -24,40 +23,66 @@ const TEMPLATE_LABELS: Record<string, string> = {
 export default function SettingsPanel({
   open,
   onClose,
-  persona,
-  onPersonaChange,
-  currentModelUrl,
-  onModelChange,
+  character,
+  onCharacterUpdated,
+  onMemoryCleared,
 }: SettingsPanelProps) {
-  const [name, setName] = useState(persona.name);
-  const [template, setTemplate] = useState(persona.personalityTemplate);
-  const [custom, setCustom] = useState(persona.customPersonality);
+  const [name, setName] = useState("");
+  const [template, setTemplate] = useState("gentle");
+  const [custom, setCustom] = useState("");
+  const [modelUrl, setModelUrl] = useState(DEFAULT_MODEL_URL);
   const [models, setModels] = useState<Live2DModelInfo[]>([]);
+  const [presetModels, setPresetModels] = useState<PresetModel[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadMsg, setUploadMsg] = useState("");
+  const [saving, setSaving] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (open) {
-      setName(persona.name);
-      setTemplate(persona.personalityTemplate);
-      setCustom(persona.customPersonality);
+    if (open && character) {
+      setName(character.name);
+      setTemplate(character.personalityTemplate);
+      setCustom(character.customPersonality);
+      setModelUrl(character.modelUrl);
       loadModels();
     }
-  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, character]);
 
   const loadModels = async () => {
-    const list = await getModels();
+    const [list, presets] = await Promise.all([getModels(), getPresetModels()]);
     setModels(list);
+    setPresetModels(presets);
   };
 
-  const handleSave = () => {
-    onPersonaChange({
-      name: name.trim() || "小念",
-      personalityTemplate: template,
-      customPersonality: custom,
-    });
-    onClose();
+  const handleSave = async () => {
+    if (!character) return;
+    setSaving(true);
+    try {
+      const updated = await updateCharacter(character.id, {
+        name: name.trim() || "小念",
+        personalityTemplate: template,
+        customPersonality: custom,
+        modelUrl,
+      });
+      onCharacterUpdated(updated);
+      onClose();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "保存失败");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleClearMemory = async () => {
+    if (!character) return;
+    if (!confirm("确定要清空和她的所有聊天记忆吗？此操作不可恢复。")) return;
+    try {
+      await clearConversation(character.id);
+      onMemoryCleared();
+      onClose();
+    } catch {
+      alert("清空记忆失败");
+    }
   };
 
   const handleUpload = async () => {
@@ -73,7 +98,7 @@ export default function SettingsPanel({
       const result = await uploadModel(file);
       setUploadMsg(`上传成功：${result.name}`);
       await loadModels();
-      onModelChange(result.modelUrl);
+      setModelUrl(result.modelUrl);
     } catch (err) {
       setUploadMsg(`上传失败：${err instanceof Error ? err.message : "未知错误"}`);
     } finally {
@@ -82,7 +107,7 @@ export default function SettingsPanel({
     }
   };
 
-  if (!open) return null;
+  if (!open || !character) return null;
 
   const isCustom = template === "custom";
 
@@ -90,7 +115,7 @@ export default function SettingsPanel({
     <div className="settings-overlay" onClick={onClose}>
       <div className="settings-panel" onClick={(e) => e.stopPropagation()}>
         <div className="settings-header">
-          <h2>设置</h2>
+          <h2>角色设置</h2>
           <button className="settings-close" onClick={onClose}>
             ×
           </button>
@@ -159,48 +184,79 @@ export default function SettingsPanel({
           {/* 模型选择 */}
           <div className="settings-section">
             <label className="settings-label">角色形象</label>
-            <div className="model-list">
-              <button
-                className={`model-btn ${currentModelUrl === DEFAULT_MODEL_URL ? "active" : ""}`}
-                onClick={() => onModelChange(DEFAULT_MODEL_URL)}
-              >
-                Haru（默认）
-              </button>
-              {models.map((m) => (
-                <button
-                  key={m.id}
-                  className={`model-btn ${currentModelUrl === m.modelUrl ? "active" : ""}`}
-                  onClick={() => onModelChange(m.modelUrl)}
-                >
-                  {m.name}
-                </button>
-              ))}
-            </div>
+
+            {/* 预置模型网格 */}
+            {presetModels.length > 0 && (
+              <div className="model-grid">
+                {presetModels.map((m) => (
+                  <button
+                    key={m.id}
+                    className={`model-card ${modelUrl === m.modelUrl ? "active" : ""}`}
+                    onClick={() => setModelUrl(m.modelUrl)}
+                    title={m.name}
+                  >
+                    <span className="model-card-avatar">{m.name.charAt(0)}</span>
+                    <span className="model-card-name">{m.name}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* 已上传模型 */}
+            {models.length > 0 && (
+              <>
+                <p className="model-section-label">已上传模型</p>
+                <div className="model-grid">
+                  {models.map((m) => (
+                    <button
+                      key={m.id}
+                      className={`model-card ${modelUrl === m.modelUrl ? "active" : ""}`}
+                      onClick={() => setModelUrl(m.modelUrl)}
+                      title={m.name}
+                    >
+                      <span className="model-card-avatar">{m.name.charAt(0)}</span>
+                      <span className="model-card-name">{m.name}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
 
             <button
               className="upload-btn"
               onClick={handleUpload}
               disabled={uploading}
             >
-              {uploading ? "上传中…" : "上传新模型（ZIP）"}
+              {uploading ? "上传中…" : "上传新模型"}
             </button>
             <input
               ref={fileInputRef}
               type="file"
-              accept=".zip"
+              accept=".zip,.rar,.7z,.tar,.gz,.tgz,.bz2,.xz"
               style={{ display: "none" }}
               onChange={handleFileChange}
             />
             {uploadMsg && <p className="upload-msg">{uploadMsg}</p>}
             <p className="upload-hint">
-              将 Live2D 模型文件打包成 ZIP 上传，需包含 .model3.json 文件
+              支持 ZIP/RAR/7Z/TAR/GZ 等格式，需包含 .model3.json 或 .model.json 文件
             </p>
           </div>
         </div>
 
         <div className="settings-footer">
-          <button className="settings-save" onClick={handleSave}>
-            保存
+          <button
+            className="settings-clear-btn"
+            onClick={handleClearMemory}
+            title="清空聊天记忆"
+          >
+            清空记忆
+          </button>
+          <button
+            className="settings-save"
+            onClick={handleSave}
+            disabled={saving}
+          >
+            {saving ? "保存中…" : "保存"}
           </button>
         </div>
       </div>

@@ -5,9 +5,24 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import multer from "multer";
-import AdmZip from "adm-zip";
-import { buildPersona, DEFAULT_PERSONA, PERSONALITY_TEMPLATES } from "./persona.js";
+// @ts-expect-error - node-7z 没有自带类型声明，CommonJS 模块用默认导入
+import Seven from "node-7z";
+import { path7za } from "7zip-bin";
+import { buildPersona, PERSONALITY_TEMPLATES, clampMoodChange, getMoodLevel } from "./persona.js";
 import type { PersonaSettings } from "./persona.js";
+import {
+  loadCharacters,
+  getCharacter,
+  addCharacter,
+  updateCharacter,
+  deleteCharacter,
+  loadConversation,
+  saveConversation,
+  clearConversation,
+  generateId,
+  DEFAULT_POSITION,
+} from "./storage.js";
+import type { Character } from "./storage.js";
 
 dotenv.config();
 
@@ -17,6 +32,12 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// 防止浏览器缓存 API 响应（避免模型切换后前端读取到旧数据）
+app.use("/api", (_req, res, next) => {
+  res.set("Cache-Control", "no-cache, no-store, must-revalidate");
+  next();
+});
 
 const PORT = process.env.PORT || 3001;
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
@@ -29,17 +50,15 @@ if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 }
 
-// 静态服务上传的模型文件（/api/models/xxx → uploads/live2d/xxx）
+// 静态服务上传的模型文件
 app.use("/api/models", express.static(UPLOADS_DIR));
 
-// multer 配置：内存存储，文件大小限制 100MB
+// multer 配置
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 100 * 1024 * 1024 },
 });
 
-// 上下文窗口：每个会话保留最近的对话记录
-const conversations = new Map<string, { role: string; content: string }[]>();
 const MAX_HISTORY_ROUNDS = 20;
 
 interface ChatMessage {
@@ -47,112 +66,196 @@ interface ChatMessage {
   content: string;
 }
 
-function getHistory(sessionId: string): ChatMessage[] {
-  if (!conversations.has(sessionId)) {
-    conversations.set(sessionId, []);
-  }
-  return conversations.get(sessionId)!;
-}
-
-function trimHistory(history: ChatMessage[]) {
-  const maxMessages = MAX_HISTORY_ROUNDS * 2;
-  while (history.length > maxMessages) {
-    history.shift();
-  }
-}
-
-// SSE 事件推送辅助函数
-function sseSend(
-  res: express.Response,
-  data: { type: string; [key: string]: unknown }
-) {
+// SSE 辅助函数
+function sseSend(res: express.Response, data: { type: string; [key: string]: unknown }) {
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
-// 解析 AI 回复开头的【心情:XX】标记
-// 返回 { mood, text } —— mood 为解析到的心情值，text 为去掉标记后的剩余文本
-function parseMoodMarker(buffer: string): {
-  mood: number | null;
-  rest: string;
-} {
-  const match = buffer.match(/^【心情:(\d{1,3})】/);
-  if (match) {
-    const mood = parseInt(match[1], 10);
-    return { mood, rest: buffer.slice(match[0].length) };
+// 解析心情和情绪标记
+function parseMarkers(buffer: string): { mood: number | null; emotion: string | null; rest: string } {
+  let mood: number | null = null;
+  let emotion: string | null = null;
+  let rest = buffer;
+
+  // 解析心情标记
+  const moodMatch = rest.match(/^【心情:(\d{1,3})】/);
+  if (moodMatch) {
+    mood = parseInt(moodMatch[1], 10);
+    rest = rest.slice(moodMatch[0].length);
   }
-  return { mood: null, rest: buffer };
+
+  // 解析情绪标记
+  const emotionMatch = rest.match(/^【情绪:(\S+?)】/);
+  if (emotionMatch) {
+    emotion = emotionMatch[1];
+    rest = rest.slice(emotionMatch[0].length);
+  }
+
+  return { mood, emotion, rest };
 }
 
-// 判断缓冲区是否还需要继续等待心情标记
 function needsMoreBuffer(buffer: string): boolean {
-  const prefix = "【心情:";
-  // 不是以【开头，肯定没有心情标记
   if (!buffer.startsWith("【")) return false;
-  // 以【心情:开头但还没遇到】，继续等
-  if (buffer.startsWith(prefix)) {
-    return !buffer.includes("】");
+
+  const firstClose = buffer.indexOf("】");
+  if (firstClose === -1) return true; // 第一个标记还没结束
+
+  // 第一个标记完整，检查后面是否可能是第二个标记
+  const afterFirst = buffer.slice(firstClose + 1);
+  if (afterFirst.startsWith("【")) {
+    return afterFirst.indexOf("】") === -1; // 第二个标记还没结束
   }
-  // buffer 是 "【心情:" 的前缀（如 "【"、"【心"、"【心情"），继续等
-  if (prefix.startsWith(buffer)) return true;
-  // 以【开头但不是心情标记前缀（如 "【其他"），不需要等
+  if (afterFirst === "") return true; // 刚到第一个】后，可能后面还有标记
   return false;
 }
 
+// 从角色提取 PersonaSettings
+function characterToPersona(char: Character): PersonaSettings {
+  return {
+    name: char.name,
+    personalityTemplate: char.personalityTemplate,
+    customPersonality: char.customPersonality,
+  };
+}
+
+// ========== 调用 DeepSeek 流式 API 的通用函数 ==========
+async function callDeepSeekStream(
+  messages: ChatMessage[],
+  onContent: (text: string) => void,
+  onMood: (mood: number | null) => void,
+  onEmotion: (emotion: string | null) => void,
+  clientClosed: () => boolean
+): Promise<{ fullReply: string; rawMood: number | null; emotion: string | null }> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 120000);
+
+  const response = await fetch(DEEPSEEK_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
+    },
+    body: JSON.stringify({ model: MODEL, messages, stream: true }),
+    signal: controller.signal,
+  });
+  clearTimeout(timeoutId);
+
+  if (!response.ok || !response.body) {
+    throw new Error(`DeepSeek API 调用失败 (${response.status})`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let rawBuffer = "";
+  let textBuffer = "";
+  let markersResolved = false;
+  let rawMood: number | null = null;
+  let emotion: string | null = null;
+  let fullReply = "";
+
+  const tryResolveMarkers = () => {
+    if (markersResolved) return;
+    if (needsMoreBuffer(textBuffer)) return;
+    const { mood, emotion: emo, rest } = parseMarkers(textBuffer);
+    if (mood !== null) {
+      rawMood = Math.max(0, Math.min(100, mood));
+    }
+    emotion = emo;
+    onMood(rawMood);
+    onEmotion(emotion);
+    markersResolved = true;
+    textBuffer = rest;
+    if (textBuffer) {
+      fullReply += textBuffer;
+      if (!clientClosed()) onContent(textBuffer);
+      textBuffer = "";
+    }
+  };
+
+  while (true) {
+    if (clientClosed()) break;
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    rawBuffer += decoder.decode(value, { stream: true });
+    const lines = rawBuffer.split("\n");
+    rawBuffer = lines.pop() || "";
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith("data:")) continue;
+      const payload = trimmed.slice(5).trim();
+      if (payload === "[DONE]") continue;
+
+      try {
+        const json = JSON.parse(payload) as {
+          choices?: { delta?: { content?: string } }[];
+        };
+        const content = json.choices?.[0]?.delta?.content;
+        if (!content) continue;
+
+        if (!markersResolved) {
+          textBuffer += content;
+          tryResolveMarkers();
+        } else {
+          fullReply += content;
+          if (!clientClosed()) onContent(content);
+        }
+      } catch {
+        // 忽略解析失败
+      }
+    }
+  }
+
+  if (!markersResolved) tryResolveMarkers();
+  return { fullReply, rawMood, emotion };
+}
+
+// ========== 聊天端点（SSE 流式） ==========
 app.post("/api/chat", async (req, res) => {
-  const {
-    message,
-    sessionId = "default",
-    persona,
-  } = req.body as {
+  const { message, characterId } = req.body as {
     message?: string;
-    sessionId?: string;
-    persona?: PersonaSettings;
+    characterId?: string;
   };
 
   if (!message || typeof message !== "string") {
     return res.status(400).json({ error: "message 字段必填" });
   }
-
+  if (!characterId) {
+    return res.status(400).json({ error: "characterId 字段必填" });
+  }
   if (!DEEPSEEK_API_KEY) {
     return res.status(500).json({ error: "服务器未配置 DEEPSEEK_API_KEY" });
   }
 
-  const history = getHistory(sessionId);
+  const character = getCharacter(characterId);
+  if (!character) {
+    return res.status(404).json({ error: "角色不存在" });
+  }
 
-  // 根据前端传来的人设设置生成 system prompt
-  const personaSettings: PersonaSettings = persona
-    ? {
-        name: persona.name || DEFAULT_PERSONA.name,
-        personalityTemplate: persona.personalityTemplate || "gentle",
-        customPersonality: persona.customPersonality || "",
-      }
-    : DEFAULT_PERSONA;
-  const systemPrompt = buildPersona(personaSettings);
+  // 加载对话历史
+  const convData = loadConversation(characterId);
+  const currentMood = character.mood;
+  const systemPrompt = buildPersona(characterToPersona(character), currentMood);
 
   const messages: ChatMessage[] = [
     { role: "system", content: systemPrompt },
-    ...history,
+    ...convData.messages,
     { role: "user", content: message },
   ];
 
-  // 设置 SSE 响应头
+  // SSE 响应头
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no"); // 禁用 Nginx 缓冲（若有反代）
+  res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
 
-  console.log(`[chat] 收到请求: sessionId=${sessionId}, message="${message.slice(0, 30)}"`);
+  console.log(`[chat] characterId=${characterId}, message="${message.slice(0, 30)}"`);
 
-  // 客户端断开时标记 —— 必须监听 res 的 close 事件
-  // （req 的 close 在 express.json() 解析完 body 后就会触发，不能用来判断客户端是否断开）
   let clientClosed = false;
-  res.on("close", () => {
-    clientClosed = true;
-    console.log("[chat] 客户端断开连接");
-  });
+  res.on("close", () => { clientClosed = true; });
 
-  // 推送错误并结束
   const sendError = (msg: string) => {
     if (clientClosed) return;
     sseSend(res, { type: "error", error: msg });
@@ -160,147 +263,233 @@ app.post("/api/chat", async (req, res) => {
   };
 
   try {
-    console.log("[chat] 正在调用 DeepSeek API...");
-    // 超时保护：120 秒后中断 fetch
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 120000);
-
-    const response = await fetch(DEEPSEEK_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
+    const { fullReply, rawMood, emotion } = await callDeepSeekStream(
+      messages,
+      (text) => sseSend(res, { type: "text", text }),
+      (mood) => {
+        // 限制心情变化幅度
+        const finalMood = mood !== null ? clampMoodChange(currentMood, mood, 5) : currentMood;
+        sseSend(res, { type: "mood", mood: finalMood });
       },
-      body: JSON.stringify({
-        model: MODEL,
-        messages,
-        stream: true,
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
+      (emotion) => {
+        if (emotion) sseSend(res, { type: "emotion", emotion });
+      },
+      () => clientClosed
+    );
 
-    console.log("[chat] DeepSeek API 响应状态:", response.status);
+    const reply = fullReply.trim() || "（她好像走神了，再说一次试试～）";
+    const finalMood = rawMood !== null ? clampMoodChange(currentMood, rawMood, 5) : currentMood;
 
-    if (!response.ok || !response.body) {
-      const errText = await response.text().catch(() => "");
-      console.error("[chat] DeepSeek API 错误:", response.status, errText);
-      return sendError(`DeepSeek API 调用失败 (${response.status})`);
+    console.log(`[chat] 完成: mood=${currentMood}→${finalMood}, emotion=${emotion || "无"}, reply="${reply.slice(0, 50)}"`);
+
+    // 保存对话历史
+    convData.messages.push({ role: "user", content: message });
+    convData.messages.push({ role: "assistant", content: reply });
+    // 限制历史长度
+    while (convData.messages.length > MAX_HISTORY_ROUNDS * 2) {
+      convData.messages.shift();
     }
+    convData.lastMood = finalMood;
+    convData.lastActiveTime = new Date().toISOString();
+    saveConversation(characterId, convData);
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder("utf-8");
-    let rawBuffer = ""; // 用于按行解析 DeepSeek SSE
-    let textBuffer = ""; // 用于缓冲开头解析心情标记
-    let moodResolved = false;
-    let moodValue = 60; // 默认心情值
-    let fullReply = ""; // 完整回复文本（不含心情标记）
-    let chunkCount = 0;
-
-    // 尝试解析缓冲区开头的心情标记
-    const tryResolveMood = () => {
-      if (moodResolved) return;
-      if (needsMoreBuffer(textBuffer)) return; // 还需要更多字符
-      const { mood, rest } = parseMoodMarker(textBuffer);
-      if (mood !== null) {
-        moodValue = Math.max(0, Math.min(100, mood));
-      }
-      // 无论是否解析到标记，都推送当前心情值（解析到用真实值，否则用默认值60）
-      if (!clientClosed) sseSend(res, { type: "mood", mood: moodValue });
-      moodResolved = true;
-      console.log("[chat] 心情值已解析:", moodValue);
-      textBuffer = rest;
-      // 把剩余缓冲的文本推送出去
-      if (textBuffer) {
-        fullReply += textBuffer;
-        if (!clientClosed) sseSend(res, { type: "text", text: textBuffer });
-        textBuffer = "";
-      }
-    };
-
-    while (true) {
-      if (clientClosed) break;
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      chunkCount++;
-      rawBuffer += decoder.decode(value, { stream: true });
-
-      // 按行解析 DeepSeek 的 SSE 数据
-      const lines = rawBuffer.split("\n");
-      rawBuffer = lines.pop() || ""; // 保留最后不完整的一行
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith("data:")) continue;
-
-        const payload = trimmed.slice(5).trim();
-        if (payload === "[DONE]") continue;
-
-        try {
-          const json = JSON.parse(payload) as {
-            choices?: { delta?: { content?: string } }[];
-          };
-          const content = json.choices?.[0]?.delta?.content;
-          if (!content) continue; // 跳过推理内容（reasoning_content），只转发实际回复
-
-          if (!moodResolved) {
-            textBuffer += content;
-            tryResolveMood();
-          } else {
-            fullReply += content;
-            if (!clientClosed) sseSend(res, { type: "text", text: content });
-          }
-        } catch {
-          // 忽略解析失败的行
-        }
-      }
-    }
-
-    // 流结束后，若心情标记还没解析（例如 AI 没按格式输出），处理剩余缓冲
-    if (!moodResolved) {
-      tryResolveMood();
-    }
-
-    const reply =
-      fullReply.trim() || "（她好像走神了，再说一次试试～）";
-
-    console.log(`[chat] 完成: mood=${moodValue}, reply="${reply.slice(0, 50)}"`);
-
-    // 保存到历史记录（纯文本，不含心情标记）
-    history.push({ role: "user", content: message });
-    history.push({ role: "assistant", content: reply });
-    trimHistory(history);
+    // 更新角色心情
+    updateCharacter(characterId, { mood: finalMood });
 
     if (!clientClosed) {
-      sseSend(res, { type: "done", sessionId });
+      sseSend(res, { type: "done" });
       res.end();
-      console.log("[chat] 已发送 done 事件并关闭响应");
     }
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
-      console.error("[chat] DeepSeek API 调用超时（120秒）");
       sendError("AI 响应超时，请稍后再试");
     } else {
-      console.error("[chat] 服务器异常:", err);
+      console.error("[chat] 异常:", err);
       sendError("服务器内部错误");
     }
   }
 });
 
-// 清空某会话记忆
-app.delete("/api/chat/:sessionId", (req, res) => {
-  const { sessionId } = req.params;
-  conversations.delete(sessionId);
+// ========== AI 主动发消息 ==========
+app.post("/api/proactive", async (req, res) => {
+  const { characterId } = req.body as { characterId?: string };
+
+  if (!characterId) return res.status(400).json({ error: "characterId 必填" });
+  if (!DEEPSEEK_API_KEY) return res.status(500).json({ error: "未配置 API Key" });
+
+  const character = getCharacter(characterId);
+  if (!character) return res.status(404).json({ error: "角色不存在" });
+
+  const convData = loadConversation(characterId);
+  const currentMood = character.mood;
+
+  // 根据当前时间获取时间段
+  const hour = new Date().getHours();
+  let timeOfDay: string;
+  if (hour < 6) timeOfDay = "现在是深夜";
+  else if (hour < 11) timeOfDay = "现在是早上";
+  else if (hour < 14) timeOfDay = "现在是中午";
+  else if (hour < 18) timeOfDay = "现在是下午";
+  else if (hour < 22) timeOfDay = "现在是晚上";
+  else timeOfDay = "现在是深夜";
+
+  // 随机选一个话题方向，避免每次主动消息重复
+  const proactiveTopics = [
+    "关心对方在做什么",
+    "分享自己刚才想到的一件小事",
+    "撒娇说想对方了",
+    "抱怨对方怎么不来找你",
+    "突然问对方一个问题",
+    "说一个自己的小愿望",
+    "提到想吃的东西或想去的地方",
+    "说刚才做了一个梦",
+    "提到一首歌或一部剧",
+    "问对方今天开不开心",
+    "说想跟对方一起做某件事",
+    "回忆两人之前的某段对话",
+  ];
+  const topic = proactiveTopics[Math.floor(Math.random() * proactiveTopics.length)];
+
+  // 主动消息的系统 prompt
+  const systemPrompt = buildPersona(characterToPersona(character), currentMood) +
+    `\n\n现在是你主动找用户说话。${timeOfDay}，用户已经有一段时间没来找你了。\n这次你想聊的方向是：${topic}。\n主动消息要简短自然，只发一条，像微信突然弹出来的消息。\n不要重复之前说过的内容，每次用不同的话题或表达方式。`;
+
+  const messages: ChatMessage[] = [
+    { role: "system", content: systemPrompt },
+    ...convData.messages.slice(-6), // 最近几条作为上下文
+  ];
+
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+
+  let clientClosed = false;
+  res.on("close", () => { clientClosed = true; });
+
+  const sendError = (msg: string) => {
+    if (clientClosed) return;
+    sseSend(res, { type: "error", error: msg });
+    res.end();
+  };
+
+  try {
+    const { fullReply, rawMood, emotion } = await callDeepSeekStream(
+      messages,
+      (text) => sseSend(res, { type: "text", text }),
+      (mood) => {
+        const finalMood = mood !== null ? clampMoodChange(currentMood, mood, 5) : currentMood;
+        sseSend(res, { type: "mood", mood: finalMood });
+      },
+      (emotion) => {
+        if (emotion) sseSend(res, { type: "emotion", emotion });
+      },
+      () => clientClosed
+    );
+
+    const reply = fullReply.trim();
+    if (reply) {
+      const finalMood = rawMood !== null ? clampMoodChange(currentMood, rawMood, 5) : currentMood;
+      convData.messages.push({ role: "assistant", content: reply });
+      while (convData.messages.length > MAX_HISTORY_ROUNDS * 2) convData.messages.shift();
+      convData.lastMood = finalMood;
+      convData.lastActiveTime = new Date().toISOString();
+      saveConversation(characterId, convData);
+      updateCharacter(characterId, { mood: finalMood });
+    }
+
+    if (!clientClosed) {
+      sseSend(res, { type: "done" });
+      res.end();
+    }
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      sendError("AI 响应超时");
+    } else {
+      console.error("[proactive] 异常:", err);
+      sendError("服务器内部错误");
+    }
+  }
+});
+
+// ========== 心情衰减（用户长时间不回复） ==========
+app.post("/api/mood-decay", (req, res) => {
+  const { characterId } = req.body as { characterId?: string };
+  if (!characterId) return res.status(400).json({ error: "characterId 必填" });
+
+  const character = getCharacter(characterId);
+  if (!character) return res.status(404).json({ error: "角色不存在" });
+
+  // 每次衰减 5 点
+  const newMood = Math.max(0, character.mood - 5);
+  updateCharacter(characterId, { mood: newMood });
+
+  const level = getMoodLevel(newMood);
+  console.log(`[mood-decay] ${character.name}: ${character.mood}→${newMood} (${level.label})`);
+  res.json({ ok: true, mood: newMood, level: level.label, emoji: level.emoji });
+});
+
+// ========== 角色管理 API ==========
+app.get("/api/characters", (_req, res) => {
+  res.json(loadCharacters());
+});
+
+app.get("/api/characters/:id", (req, res) => {
+  const char = getCharacter(req.params.id);
+  if (!char) return res.status(404).json({ error: "角色不存在" });
+  const conv = loadConversation(req.params.id);
+  res.json({ character: char, conversation: conv });
+});
+
+app.post("/api/characters", (req, res) => {
+  const { name, personalityTemplate, customPersonality, modelUrl } = req.body as Partial<Character>;
+  if (!name) return res.status(400).json({ error: "name 必填" });
+
+  const character: Character = {
+    id: generateId(),
+    name,
+    personalityTemplate: personalityTemplate || "gentle",
+    customPersonality: customPersonality || "",
+    modelUrl: modelUrl || "/live2d/icegirl/IceGirl.model3.json",
+    mood: 60,
+    live2dPosition: { ...DEFAULT_POSITION },
+    createdAt: new Date().toISOString(),
+  };
+  addCharacter(character);
+  console.log(`[characters] 创建角色: ${character.id} (${name})`);
+  res.json(character);
+});
+
+app.put("/api/characters/:id", (req, res) => {
+  const updates = req.body as Partial<Character>;
+  const updated = updateCharacter(req.params.id, updates);
+  if (!updated) return res.status(404).json({ error: "角色不存在" });
+  console.log(`[characters] 更新角色: ${req.params.id}`);
+  res.json(updated);
+});
+
+app.delete("/api/characters/:id", (req, res) => {
+  const ok = deleteCharacter(req.params.id);
+  if (!ok) return res.status(404).json({ error: "角色不存在" });
+  console.log(`[characters] 删除角色: ${req.params.id}`);
+  res.json({ ok: true });
+});
+
+// 清空对话记忆
+app.delete("/api/characters/:id/conversation", (req, res) => {
+  clearConversation(req.params.id);
+  // 重置心情为 60
+  updateCharacter(req.params.id, { mood: 60 });
   res.json({ ok: true, message: "记忆已清空" });
 });
 
-// 获取性格模板列表
+// ========== 性格模板 ==========
 app.get("/api/personality-templates", (_req, res) => {
   res.json(PERSONALITY_TEMPLATES);
 });
 
-// 获取已上传的模型列表
+// ========== Live2D 模型管理 ==========
 app.get("/api/models", (_req, res) => {
   try {
     const models: { id: string; name: string; modelUrl: string }[] = [];
@@ -324,63 +513,99 @@ app.get("/api/models", (_req, res) => {
   }
 });
 
-// 上传 Live2D 模型（ZIP 格式）
-app.post(
-  "/api/upload-model",
-  upload.single("model"),
-  (req, res) => {
-    try {
-      if (!req.file) {
-        return res.status(400).json({ error: "请上传 ZIP 文件" });
-      }
+// 预置模型列表（前端 public 目录中的模型）
+app.get("/api/preset-models", (_req, res) => {
+  const presets = [
+    { id: "icegirl", name: "IceGirl", modelUrl: "/live2d/icegirl/IceGirl.model3.json", format: "cubism4" },
+    { id: "haru", name: "Haru", modelUrl: "/live2d/haru/Haru.model3.json", format: "cubism4" },
+  ];
+  res.json(presets);
+});
 
-      const zip = new AdmZip(req.file.buffer);
-      const modelId = `model-${Date.now()}`;
-      const extractDir = path.join(UPLOADS_DIR, modelId);
-      fs.mkdirSync(extractDir, { recursive: true });
+app.post("/api/upload-model", upload.single("model"), async (req, res) => {
+  const tmpArchive = path.join(UPLOADS_DIR, `model-${Date.now()}.tmp`);
+  try {
+    if (!req.file) return res.status(400).json({ error: "请上传压缩文件" });
 
-      zip.extractAllTo(extractDir, true);
+    const modelId = `model-${Date.now()}`;
+    const extractDir = path.join(UPLOADS_DIR, modelId);
+    fs.mkdirSync(extractDir, { recursive: true });
 
-      // 查找 .model3.json 文件（可能在子目录中）
-      let model3File: string | null = null;
-      const findModel3 = (dir: string): string | null => {
-        const entries = fs.readdirSync(dir, { withFileTypes: true });
-        for (const entry of entries) {
-          const fullPath = path.join(dir, entry.name);
-          if (entry.isDirectory()) {
-            const found = findModel3(fullPath);
-            if (found) return found;
-          } else if (entry.name.endsWith(".model3.json")) {
-            return path.relative(extractDir, fullPath).replace(/\\/g, "/");
-          }
+    // node-7z 需要文件路径，先把 buffer 写入临时文件
+    fs.writeFileSync(tmpArchive, req.file.buffer);
+
+    // 用 7-Zip 解压（支持 ZIP/RAR/7Z/TAR/GZ/BZ2/XZ 等格式）
+    await new Promise<void>((resolve, reject) => {
+      const stream = Seven.extractFull(tmpArchive, extractDir, {
+        $bin: path7za,
+        $progress: false,
+      });
+      stream.on("end", () => resolve());
+      stream.on("error", (err: Error) => reject(err));
+    });
+
+    // 删除临时压缩文件
+    fs.rmSync(tmpArchive, { force: true });
+
+    // 查找模型文件（优先 .model3.json，其次 .model.json）
+    type Found = { file: string; format: "cubism4" | "cubism2" };
+    const findAll = (dir: string): Found[] => {
+      const results: Found[] = [];
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          results.push(...findAll(fullPath));
+        } else if (entry.name.endsWith(".model3.json")) {
+          results.push({
+            file: path.relative(extractDir, fullPath).replace(/\\/g, "/"),
+            format: "cubism4",
+          });
+        } else if (entry.name.endsWith(".model.json")) {
+          results.push({
+            file: path.relative(extractDir, fullPath).replace(/\\/g, "/"),
+            format: "cubism2",
+          });
         }
-        return null;
-      };
-
-      model3File = findModel3(extractDir);
-      if (!model3File) {
-        fs.rmSync(extractDir, { recursive: true });
-        return res.status(400).json({ error: "ZIP 中未找到 .model3.json 文件" });
       }
+      return results;
+    };
 
-      // 如果 model3.json 在子目录中，把子目录内容提到顶层
-      const model3Dir = path.dirname(path.join(extractDir, model3File));
-      if (model3Dir !== extractDir) {
-        const tempDir = path.join(UPLOADS_DIR, `${modelId}-tmp`);
-        fs.renameSync(model3Dir, tempDir);
-        fs.rmSync(extractDir, { recursive: true });
-        fs.renameSync(tempDir, extractDir);
-        model3File = path.basename(model3File);
-      }
-
-      const modelUrl = `/api/models/${modelId}/${model3File}`;
-      res.json({ ok: true, modelId, modelUrl, name: req.file.originalname });
-    } catch (err) {
-      console.error("模型上传失败:", err);
-      res.status(500).json({ error: "模型上传处理失败" });
+    const allModels = findAll(extractDir);
+    const found = allModels.find((m) => m.format === "cubism4") || allModels[0];
+    if (!found) {
+      fs.rmSync(extractDir, { recursive: true });
+      return res.status(400).json({
+        error: "压缩包中未找到 .model3.json 或 .model.json 文件",
+      });
     }
+
+    let modelFile = found.file;
+
+    // 子目录提顶层
+    const modelDir = path.dirname(path.join(extractDir, modelFile));
+    if (modelDir !== extractDir) {
+      const tempDir = path.join(UPLOADS_DIR, `${modelId}-tmp`);
+      fs.renameSync(modelDir, tempDir);
+      fs.rmSync(extractDir, { recursive: true });
+      fs.renameSync(tempDir, extractDir);
+      modelFile = path.basename(modelFile);
+    }
+
+    const modelUrl = `/api/models/${modelId}/${modelFile}`;
+    res.json({
+      ok: true,
+      modelId,
+      modelUrl,
+      name: req.file.originalname,
+      format: found.format,
+    });
+  } catch (err) {
+    console.error("模型上传失败:", err);
+    fs.rmSync(tmpArchive, { force: true });
+    res.status(500).json({ error: "模型上传处理失败，请检查压缩文件格式" });
   }
-);
+});
 
 app.listen(PORT, () => {
   console.log(`✅ 后端服务已启动: http://localhost:${PORT}`);
