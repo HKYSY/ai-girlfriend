@@ -91,8 +91,8 @@ export default function App() {
         if (list.length === 0) {
           // 自动创建默认角色
           const def = await createCharacter({
-            name: "小念",
-            personalityTemplate: "gentle",
+            name: "玉子",
+            personalityTemplate: "yuko",
             customPersonality: "",
             modelUrl: "/live2d/icegirl/IceGirl.model3.json",
           });
@@ -390,7 +390,7 @@ export default function App() {
     try {
       const newChar = await createCharacter({
         name: "新角色",
-        personalityTemplate: "gentle",
+        personalityTemplate: "yuko",
         customPersonality: "",
         modelUrl: "/live2d/icegirl/IceGirl.model3.json",
       });

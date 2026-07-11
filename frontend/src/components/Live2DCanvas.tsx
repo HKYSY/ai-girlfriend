@@ -43,7 +43,8 @@ function emotionToMotions(emotion: string): string[] {
   switch (emotion) {
     case "开心":
     case "撒娇":
-      return ["TapBody", "Tap"]; // 活泼动作
+      // 挥手动作（TapBody）有残影 bug，禁止自动触发，仅用 Tap
+      return ["Tap"];
     default:
       return [];
   }
@@ -269,7 +270,7 @@ export default function Live2DCanvas({
             });
             return;
           }
-          // 单击 → 显示反馈文字（双击由 React onDoubleClick 处理）
+          // 单击 → 显示反馈文字
           const text =
             CLICK_FEEDBACKS[
               Math.floor(Math.random() * CLICK_FEEDBACKS.length)
@@ -558,28 +559,7 @@ export default function Live2DCanvas({
     setShowInteract(true);
   };
 
-  // 双击 overlay → 触发 TapBody 媚眼动作（每次双击执行一次）
-  const handleOverlayDoubleClick = () => {
-    const model = modelRef.current;
-    if (!model) return;
-    try {
-      model.stopMotions();
-      // 尝试播放 TapBody 组的媚眼动作（索引1），失败则随机
-      model.motion("TapBody", 1, MOTION_FORCE, {
-        resetExpression: false,
-        onFinish: () => {
-          try { model.motion("Idle", 0, 1); } catch { /* 忽略 */ }
-        },
-      });
-      setActiveMotion("TapBody");
-    } catch {
-      // 索引1不存在，随机播放 TapBody
-      try {
-        model.motion("TapBody", undefined, MOTION_FORCE);
-        setActiveMotion("TapBody");
-      } catch { /* 忽略 */ }
-    }
-  };
+  // 双击 overlay 已禁用（TapBody 挥手动作有残影 bug，不允许触发）
 
   // 浮层拖动：鼠标按下 header 开始拖动（相对于视口）
   const handlePanelDragStart = (e: React.MouseEvent) => {
@@ -649,7 +629,6 @@ export default function Live2DCanvas({
         }}
         onPointerDown={handleOverlayPointerDown}
         onContextMenu={handleOverlayContextMenu}
-        onDoubleClick={handleOverlayDoubleClick}
       />
 
       {/* 对话气泡（跟随模型上方，情绪/互动触发） */}
@@ -757,7 +736,7 @@ export default function Live2DCanvas({
               <div className="interact-section">
                 <div className="interact-section-title">动作</div>
                 <div className="interact-btn-grid">
-                  {motionGroups.map((group) => (
+                  {motionGroups.filter((g) => g !== "TapBody").map((group) => (
                     <button
                       key={group}
                       className={`interact-btn${

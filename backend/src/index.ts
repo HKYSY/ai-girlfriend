@@ -201,21 +201,21 @@ function sseSend(res: express.Response, data: { type: string; [key: string]: unk
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
-// 解析心情和情绪标记
+// 解析心情和情绪标记（隐藏格式 <|mood:XX|><|emotion:标签|>，用户不可见）
 function parseMarkers(buffer: string): { mood: number | null; emotion: string | null; rest: string } {
   let mood: number | null = null;
   let emotion: string | null = null;
   let rest = buffer;
 
-  // 解析心情标记
-  const moodMatch = rest.match(/^【心情:(\d{1,3})】/);
+  // 解析心情标记 <|mood:XX|>
+  const moodMatch = rest.match(/^<\|mood:(\d{1,3})\|>/);
   if (moodMatch) {
     mood = parseInt(moodMatch[1], 10);
     rest = rest.slice(moodMatch[0].length);
   }
 
-  // 解析情绪标记
-  const emotionMatch = rest.match(/^【情绪:(\S+?)】/);
+  // 解析情绪标记 <|emotion:XX|>
+  const emotionMatch = rest.match(/^<\|emotion:(\S+?)\|>/);
   if (emotionMatch) {
     emotion = emotionMatch[1];
     rest = rest.slice(emotionMatch[0].length);
@@ -225,17 +225,17 @@ function parseMarkers(buffer: string): { mood: number | null; emotion: string | 
 }
 
 function needsMoreBuffer(buffer: string): boolean {
-  if (!buffer.startsWith("【")) return false;
+  if (!buffer.startsWith("<")) return false;
 
-  const firstClose = buffer.indexOf("】");
+  const firstClose = buffer.indexOf("|>");
   if (firstClose === -1) return true; // 第一个标记还没结束
 
   // 第一个标记完整，检查后面是否可能是第二个标记
-  const afterFirst = buffer.slice(firstClose + 1);
-  if (afterFirst.startsWith("【")) {
-    return afterFirst.indexOf("】") === -1; // 第二个标记还没结束
+  const afterFirst = buffer.slice(firstClose + 2);
+  if (afterFirst.startsWith("<")) {
+    return afterFirst.indexOf("|>") === -1; // 第二个标记还没结束
   }
-  if (afterFirst === "") return true; // 刚到第一个】后，可能后面还有标记
+  if (afterFirst === "") return true; // 刚到第一个|>后，可能后面还有标记
   return false;
 }
 
@@ -484,25 +484,65 @@ app.post("/api/proactive", async (req, res) => {
   else timeOfDay = "现在是深夜";
 
   // 随机选一个话题方向，避免每次主动消息重复
+  // 结合玉子人设（二次元宅女/插画师/养猫/追番/抽卡），让主动消息有"她"的味道
   const proactiveTopics = [
-    "关心对方在做什么",
-    "分享自己刚才想到的一件小事",
-    "撒娇说想对方了",
-    "抱怨对方怎么不来找你",
-    "突然问对方一个问题",
-    "说一个自己的小愿望",
-    "提到想吃的东西或想去的地方",
-    "说刚才做了一个梦",
-    "提到一首歌或一部剧",
-    "问对方今天开不开心",
-    "说想跟对方一起做某件事",
-    "回忆两人之前的某段对话",
+    // 关心类
+    "关心对方在做什么，语气自然不要太刻意",
+    "问对方今天开不开心，有没有什么好玩的事",
+    "问对方吃饭了没，像随手一发的那种",
+    "提醒对方天气变化，比如降温加衣服、下雨带伞",
+
+    // 想念/暧昧类（暧昧期人设，不好意思直说）
+    "想说想对方了但又不好意思直说，绕个弯子表达",
+    "抱怨对方怎么不来找你，带点小撒娇",
+    "突然想听对方的声音，找个借口让他发语音或打电话",
+    "看到什么东西让你想起对方，顺嘴提一下",
+    "试探性地问对方在干嘛，是不是在忙",
+
+    // 团子（橘猫）相关
+    "吐槽团子刚才的捣乱行为，比如踩键盘、扒拉东西、叼走数位笔",
+    "分享团子的可爱瞬间，比如睡相、表情、傻乎乎的样子",
+    "说团子又在盯着空气看，不知道在干嘛，有点渗人",
+
+    // 画画/工作相关
+    "抱怨画到一半卡住了好烦，想找人说说话转移注意力",
+    "分享刚交完稿的轻松感，终于解放了想庆祝一下",
+    "吐槽甲方又改需求了，想打人",
+    "说突然有灵感想画点什么，但不知道画啥，问他有没有想法",
+    "说在给对方偷偷画一张画，不让他看",
+
+    // 二次元相关
+    "激动地分享刚更新的番太好看了，想安利给他",
+    "吐槽某部番的剧情走向，比如角色死了、烂尾了、BE了",
+    "说又氪金抽卡了，非到想哭或者欧到炫耀",
+    "提到原神或星铁的新活动，问他玩不玩",
+    "安利对方一首最近单曲循环的歌",
+
+    // 生活琐事
+    "说又熬夜了，天亮才发现，后悔但又忍不住",
+    "说点了奶茶或外卖，问他要不要",
+    "说被窝太暖不想起来，撒娇让他帮忙拿东西",
+    "说下雨了好适合窝着不出门",
+    "说刚才做了个奇怪的梦，讲给他听",
+    "路过某家店想起之前的事，顺嘴提一句",
+
+    // 共同记忆类（呼应角色档案里的记忆点）
+    "提起之前约好看海的事，问他什么时候去",
+    "说漫展快到了，想拉他一起去，顺便cos",
+    "回忆两人之前聊过的某个话题，突然又想到了",
+    "提到他一直用的那个头像（你画的），心里有点小得意",
+
+    // 随机互动
+    "突然问对方一个莫名其妙的小问题",
+    "说一个小愿望，比如想去某地、想买某物、想吃某样东西",
+    "想跟对方一起做某件事，比如一起看番、一起打游戏、一起点外卖",
+    "分享刚才脑子里冒出来的一句莫名其妙的话",
   ];
   const topic = proactiveTopics[Math.floor(Math.random() * proactiveTopics.length)];
 
   // 主动消息的系统 prompt
   const systemPrompt = buildPersona(characterToPersona(character), currentMood, petState) +
-    `\n\n现在是你主动找用户说话。${timeOfDay}，用户已经有一段时间没来找你了。\n这次你想聊的方向是：${topic}。\n主动消息要简短自然，只发一条，像微信突然弹出来的消息。\n不要重复之前说过的内容，每次用不同的话题或表达方式。`;
+    `\n\n现在是你主动找用户说话。${timeOfDay}，用户已经有一段时间没来找你了。\n你突然想聊的方向是：${topic}。\n要求：\n- 只发一条，简短自然，像微信突然弹出来的消息\n- 要符合你的性格和说话方式，带你的口头禅和语气，不要像在执行任务\n- 可以结合当前心情、时间、团子的状态自然发挥\n- 不要重复之前主动消息说过的内容，每次用不同的话题或表达方式`;
 
   const messages: ChatMessage[] = [
     { role: "system", content: systemPrompt },
@@ -646,7 +686,7 @@ async function generateDiary(characterId: string): Promise<DiaryEntry | null> {
 1. 以第一人称"我"来写，语气符合你的性格
 2. 记录今天发生的事、和用户的互动、你的心情感受
 3. 自然口语化，像真的在写日记，不要客套
-4. 不要出现 [心情:xx] [情绪:xx] 这样的标记
+4. 不要出现 <|mood:xx|> <|emotion:xx|> 这样的标记
 5. 结尾可以有一句对明天的期待或小感慨
 当前心情：${moodLevel.label}（${character.mood}/100）
 当前状态：饱腹感${petState.hunger}、疲劳度${petState.fatigue}、亲密度${petState.intimacy}`;
@@ -748,7 +788,14 @@ app.get("/api/characters/:id", (req, res) => {
   const char = getCharacter(req.params.id);
   if (!char) return res.status(404).json({ error: "角色不存在" });
   const conv = loadConversation(req.params.id);
-  res.json({ character: char, conversation: conv });
+  // 过滤掉互动消息（以"（互动）"开头的 user 消息），它们只用于 AI 上下文，不展示给用户
+  const filteredConv = {
+    ...conv,
+    messages: conv.messages.filter(
+      (m) => !(m.role === "user" && m.content.startsWith("（互动）"))
+    ),
+  };
+  res.json({ character: char, conversation: filteredConv });
 });
 
 app.post("/api/characters", (req, res) => {
@@ -758,7 +805,7 @@ app.post("/api/characters", (req, res) => {
   const character: Character = {
     id: generateId(),
     name,
-    personalityTemplate: personalityTemplate || "gentle",
+    personalityTemplate: personalityTemplate || "yuko",
     customPersonality: customPersonality || "",
     modelUrl: modelUrl || "/live2d/icegirl/IceGirl.model3.json",
     mood: 60,

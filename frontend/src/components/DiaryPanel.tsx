@@ -1,13 +1,16 @@
 import { useState, useEffect } from "react";
+import { Button, Card, Typography, Empty, Spin, message } from "antd";
+import { PenLine, CheckCircle2, CalendarDays } from "lucide-react";
 import { getDiary, generateDiary } from "../api";
 import type { DiaryEntry } from "../api";
+
+const { Text, Paragraph } = Typography;
 
 interface DiaryPanelProps {
   characterId: string;
   refreshKey: number;
 }
 
-// 日期格式化：YYYY-MM-DD → MM月DD日 周X
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr + "T00:00:00");
   const mm = d.getMonth() + 1;
@@ -16,7 +19,6 @@ function formatDate(dateStr: string): string {
   return `${mm}月${dd}日 ${weekdays[d.getDay()]}`;
 }
 
-// 心情 → emoji
 function moodEmoji(mood: number): string {
   if (mood >= 90) return "😍";
   if (mood >= 70) return "😊";
@@ -38,7 +40,6 @@ export default function DiaryPanel({ characterId, refreshKey }: DiaryPanelProps)
       const data = await getDiary(characterId);
       setEntries(data.entries);
       setHasToday(data.hasToday);
-      // 默认选中第一篇（最新的）
       if (data.entries.length > 0 && !selectedEntry) {
         setSelectedEntry(data.entries[0]);
       }
@@ -54,7 +55,6 @@ export default function DiaryPanel({ characterId, refreshKey }: DiaryPanelProps)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [characterId, refreshKey]);
 
-  // 手动生成今天的日记
   const handleGenerate = async () => {
     if (generating) return;
     setGenerating(true);
@@ -63,74 +63,102 @@ export default function DiaryPanel({ characterId, refreshKey }: DiaryPanelProps)
       if (result.ok && result.entry) {
         await loadDiary();
         setSelectedEntry(result.entry);
+        message.success("日记写好了！");
       } else if (result.error) {
-        alert(result.error);
+        message.error(result.error);
       }
     } catch (e) {
       console.error("[DiaryPanel] 生成失败:", e);
-      alert("生成日记失败");
+      message.error("生成日记失败");
     } finally {
       setGenerating(false);
     }
   };
 
-  return (
-    <div className="diary-container">
-      {/* 生成今天的日记 */}
-      {!hasToday && (
-        <button
-          className="diary-generate-btn"
-          disabled={generating}
+  if (loading) {
+    return (
+      <div style={{ textAlign: "center", padding: 40 }}>
+        <Spin />
+      </div>
+    );
+  }
+
+  if (entries.length === 0 && !hasToday) {
+    return (
+      <div>
+        <Button
+          type="primary"
+          icon={<PenLine size={16} />}
+          loading={generating}
           onClick={handleGenerate}
+          block
+          style={{ marginBottom: 16 }}
         >
-          {generating ? "✍️ 正在写日记..." : "📝 写今天的日记"}
-        </button>
+          {generating ? "正在写日记..." : "写今天的日记"}
+        </Button>
+        <Empty description="还没有日记，多聊聊天后让她写日记吧～" />
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {!hasToday && (
+        <Button
+          type="primary"
+          icon={<PenLine size={16} />}
+          loading={generating}
+          onClick={handleGenerate}
+          block
+          style={{ marginBottom: 12 }}
+        >
+          {generating ? "正在写日记..." : "写今天的日记"}
+        </Button>
       )}
       {hasToday && (
-        <div className="diary-today-badge">✓ 今天的日记已写好</div>
+        <Card size="small" style={{ marginBottom: 12, background: "rgba(102, 187, 106, 0.08)", borderColor: "#66bb6a" }}>
+          <Text style={{ color: "#66bb6a", display: "flex", alignItems: "center", gap: 6 }}>
+            <CheckCircle2 size={16} /> 今天的日记已写好
+          </Text>
+        </Card>
       )}
 
-      {/* 日记列表 */}
-      {loading ? (
-        <div className="diary-loading">加载中...</div>
-      ) : entries.length === 0 ? (
-        <div className="diary-empty">
-          还没有日记，多聊聊天后点击上方按钮让她写日记吧～
+      <div className="diary-layout">
+        {/* 日期列表 */}
+        <div className="diary-list">
+          {entries.map((entry) => (
+            <button
+              key={entry.date}
+              className={`diary-list-item${selectedEntry?.date === entry.date ? " active" : ""}`}
+              onClick={() => setSelectedEntry(entry)}
+            >
+              <CalendarDays size={14} />
+              <span>{formatDate(entry.date)}</span>
+              <span>{moodEmoji(entry.mood)}</span>
+            </button>
+          ))}
         </div>
-      ) : (
-        <div className="diary-layout">
-          {/* 日期列表 */}
-          <div className="diary-list">
-            {entries.map((entry) => (
-              <button
-                key={entry.date}
-                className={`diary-list-item${selectedEntry?.date === entry.date ? " active" : ""}`}
-                onClick={() => setSelectedEntry(entry)}
-              >
-                <span className="diary-list-date">{formatDate(entry.date)}</span>
-                <span className="diary-list-mood">{moodEmoji(entry.mood)}</span>
-              </button>
-            ))}
-          </div>
 
-          {/* 日记内容 */}
-          {selectedEntry && (
-            <div className="diary-content">
-              <div className="diary-content-header">
-                <span className="diary-content-date">
-                  {formatDate(selectedEntry.date)}
-                </span>
-                <span className="diary-content-mood">
+        {/* 日记内容 */}
+        {selectedEntry && (
+          <Card
+            size="small"
+            style={{ flex: 1 }}
+            title={
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <Text strong>{formatDate(selectedEntry.date)}</Text>
+                <Text type="secondary" style={{ fontSize: 13 }}>
                   {moodEmoji(selectedEntry.mood)} 心情 {selectedEntry.mood}
-                </span>
+                </Text>
               </div>
-              <div className="diary-content-text">
-                {selectedEntry.content}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
+            }
+          >
+            <Paragraph style={{ whiteSpace: "pre-wrap", margin: 0, lineHeight: 1.8 }}>
+              {selectedEntry.content}
+            </Paragraph>
+          </Card>
+        )}
+      </div>
     </div>
   );
 }

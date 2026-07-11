@@ -82,7 +82,7 @@ export interface ShopItem {
   price: number;
   desc: string;
   effects: { hunger?: number; fatigue?: number; mood?: number; intimacy?: number };
-  category: "food" | "drink" | "gift";
+  category: "food" | "drink" | "gift" | "medicine";
 }
 
 export interface DateActivity {

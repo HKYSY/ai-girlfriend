@@ -1,5 +1,37 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
+  Button,
+  Progress,
+  InputNumber,
+  Segmented,
+  Card,
+  Tag,
+  Tooltip,
+  Typography,
+  Alert,
+  Space,
+  message,
+} from "antd";
+import {
+  HeartPulse,
+  ShoppingBag,
+  Heart,
+  Gamepad2,
+  Trophy,
+  BookOpen,
+  ChevronLeft,
+  ChevronRight,
+  Coins,
+  UtensilsCrossed,
+  Moon,
+  ClipboardCheck,
+  Lightbulb,
+  Clock,
+  Play,
+  RefreshCw,
+  Flag,
+} from "lucide-react";
+import {
   getPetState,
   petSign,
   petBuy,
@@ -20,6 +52,8 @@ import AchievementsPanel from "./AchievementsPanel";
 import DiaryPanel from "./DiaryPanel";
 import MoodDisplay from "./MoodDisplay";
 
+const { Text, Title } = Typography;
+
 interface SidebarProps {
   characterId: string;
   petState: PetState | null;
@@ -31,6 +65,16 @@ interface SidebarProps {
 
 type Tab = "status" | "shop" | "date" | "game" | "achievement" | "diary";
 type GameSubTab = "rps" | "guess" | "wheel";
+
+// 标签配置
+const TAB_CONFIG: { key: Tab; label: string; icon: React.ReactNode }[] = [
+  { key: "status", label: "状态", icon: <HeartPulse size={22} /> },
+  { key: "shop", label: "商店", icon: <ShoppingBag size={22} /> },
+  { key: "date", label: "约会", icon: <Heart size={22} /> },
+  { key: "game", label: "游戏", icon: <Gamepad2 size={22} /> },
+  { key: "achievement", label: "成就", icon: <Trophy size={22} /> },
+  { key: "diary", label: "日记", icon: <BookOpen size={22} /> },
+];
 
 // ========== 幸运转盘段定义（与后端 WHEEL_SEGMENTS 一致） ==========
 interface WheelSeg {
@@ -49,14 +93,11 @@ const WHEEL_SEGMENTS: WheelSeg[] = [
   { multiplier: 5,   weight: 1.5, label: "×5",    emoji: "💎", color: "#4dd0e1" },
   { multiplier: 10,  weight: 0.5, label: "×10",   emoji: "👑", color: "#e91e63" },
 ];
-// 总权重
 const WHEEL_TOTAL_WEIGHT = WHEEL_SEGMENTS.reduce((s, seg) => s + seg.weight, 0);
-// 计算每个扇区的角度范围和中心角度
 const WHEEL_ANGLES = WHEEL_SEGMENTS.map((seg) => {
   const sweep = (seg.weight / WHEEL_TOTAL_WEIGHT) * 360;
   return { sweep };
 });
-// 累积起始角度
 let _acc = 0;
 const WHEEL_SEGMENT_INFO = WHEEL_SEGMENTS.map((_seg, i) => {
   const sweep = WHEEL_ANGLES[i].sweep;
@@ -66,26 +107,21 @@ const WHEEL_SEGMENT_INFO = WHEEL_SEGMENTS.map((_seg, i) => {
   _acc = end;
   return { start, end, center };
 });
-// 生成 conic-gradient 字符串
 const WHEEL_GRADIENT = WHEEL_SEGMENTS.map((seg, i) => {
   const { start, end } = WHEEL_SEGMENT_INFO[i];
   return `${seg.color} ${start}deg ${end}deg`;
 }).join(", ");
-// 计算指针指向某扇区时转盘需要的旋转角度（指针在顶部 0°位置）
 function calcWheelRotation(segmentIndex: number, currentRotation: number): number {
   const center = WHEEL_SEGMENT_INFO[segmentIndex].center;
-  // 需要让 center 旋转到 0°（顶部），即旋转 (360 - center) 度
-  // 加上至少 5 圈完整旋转，且确保总是向前转（递增）
   const targetBase = 360 - center;
-  const minRotation = currentRotation + 360 * 5; // 至少多转 5 圈
-  // 找到大于 minRotation 且 mod 360 === targetBase 的角度
+  const minRotation = currentRotation + 360 * 5;
   const currentMod = ((minRotation % 360) + 360) % 360;
   let diff = targetBase - currentMod;
   if (diff < 0) diff += 360;
   return minRotation + diff;
 }
 
-// 状态条颜色判断
+// 状态条颜色
 function getHungerColor(hunger: number): string {
   if (hunger < 20) return "#e53935";
   if (hunger < 40) return "#ff9800";
@@ -96,10 +132,6 @@ function getFatigueColor(fatigue: number): string {
   if (fatigue > 60) return "#ff9800";
   return "#66bb6a";
 }
-function getIntimacyColor(): string {
-  return "#e91e63";
-}
-
 function getHungerLabel(hunger: number): string {
   if (hunger < 20) return "饿坏了";
   if (hunger < 40) return "有点饿";
@@ -129,23 +161,19 @@ export default function Sidebar({
 }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>("status");
-  // 侧边栏内容区宽度（可拖拽调整，持久化到 localStorage）
   const [contentWidth, setContentWidth] = useState(() => {
     const saved = localStorage.getItem("sidebarWidth");
     const n = saved ? parseInt(saved, 10) : NaN;
-    return !isNaN(n) && n >= 240 && n <= 480 ? n : 280;
+    return !isNaN(n) && n >= 220 && n <= 560 ? n : 300;
   });
   const sidebarDragRef = useRef(false);
   const [shopItems, setShopItems] = useState<ShopItem[]>([]);
   const [dateActivities, setDateActivities] = useState<DateActivity[]>([]);
   const [busy, setBusy] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
   const [gameResult, setGameResult] = useState<PetActionResult | null>(null);
 
-  // 游戏子标签
   const [gameSubTab, setGameSubTab] = useState<GameSubTab>("rps");
 
-  // 猜数字游戏状态
   const [guessRange, setGuessRange] = useState<number>(30);
   const [guessGame, setGuessGame] = useState<{
     range: number;
@@ -159,16 +187,13 @@ export default function Sidebar({
   } | null>(null);
   const [guessInput, setGuessInput] = useState<string>("");
 
-  // 幸运转盘状态
   const [wheelBet, setWheelBet] = useState<string>("10");
   const [wheelResult, setWheelResult] = useState<PetActionResult | null>(null);
   const [wheelSpinning, setWheelSpinning] = useState(false);
   const [wheelRotation, setWheelRotation] = useState(0);
 
-  // 成就刷新 key（操作后递增以刷新成就面板）
   const [achievementRefreshKey, setAchievementRefreshKey] = useState(0);
 
-  // 加载商店和约会数据
   useEffect(() => {
     if (!characterId) return;
     getPetState(characterId)
@@ -181,19 +206,10 @@ export default function Sidebar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [characterId]);
 
-  // toast 自动消失
-  useEffect(() => {
-    if (!toast) return;
-    const timer = setTimeout(() => setToast(null), 2500);
-    return () => clearTimeout(timer);
-  }, [toast]);
-
-  // 持久化侧边栏宽度
   useEffect(() => {
     localStorage.setItem("sidebarWidth", String(contentWidth));
   }, [contentWidth]);
 
-  // 侧边栏拖拽调整宽度
   const startSidebarDrag = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     sidebarDragRef.current = true;
@@ -204,9 +220,8 @@ export default function Sidebar({
   useEffect(() => {
     const onMouseMove = (e: MouseEvent) => {
       if (!sidebarDragRef.current) return;
-      // 计算宽度：鼠标 x 坐标 - 侧边栏左边缘（60px 导航栏宽度）
       const newWidth = e.clientX - 60;
-      setContentWidth(Math.max(240, Math.min(480, newWidth)));
+      setContentWidth(Math.max(220, Math.min(560, newWidth)));
     };
     const onMouseUp = () => {
       if (sidebarDragRef.current) {
@@ -223,14 +238,17 @@ export default function Sidebar({
     };
   }, []);
 
-  // 执行操作后的通用处理
   const handleAction = useCallback(
     (result: PetActionResult) => {
       onPetStateChange(result.petState);
-      if (result.message) setToast(result.message);
-      // 操作成功时触发 Live2D 气泡
+      if (result.message) {
+        if (result.ok) {
+          message.success(result.message);
+        } else {
+          message.warning(result.message);
+        }
+      }
       if (result.ok) {
-        // 根据操作结果生成气泡文字
         let bubble = "";
         if (result.result === "win") bubble = "你赢啦！再来一局嘛~";
         else if (result.result === "lose") bubble = "嘿嘿我赢了！";
@@ -249,10 +267,9 @@ export default function Sidebar({
         else bubble = "嗯嗯~";
         if (bubble) onBubble(bubble);
       }
-      // 成就解锁通知
       if (result.newAchievements && result.newAchievements.length > 0) {
         setAchievementRefreshKey((k) => k + 1);
-        setToast(`🏆 解锁 ${result.newAchievements.length} 个新成就！`);
+        message.success(`🏆 解锁 ${result.newAchievements.length} 个新成就！`);
         onBubble("又解锁新成就啦！好开心~");
       }
       if (result.ok && result.aiContext) {
@@ -262,7 +279,6 @@ export default function Sidebar({
     [onPetStateChange, onAIContext, onBubble]
   );
 
-  // 签到
   const handleSign = async () => {
     if (busy) return;
     setBusy(true);
@@ -270,14 +286,13 @@ export default function Sidebar({
       const result = await petSign(characterId);
       handleAction(result);
     } catch (e) {
-      setToast("签到失败，请稍后重试");
+      message.error("签到失败，请稍后重试");
       console.error(e);
     } finally {
       setBusy(false);
     }
   };
 
-  // 购买商品
   const handleBuy = async (itemId: string) => {
     if (busy) return;
     setBusy(true);
@@ -285,14 +300,13 @@ export default function Sidebar({
       const result = await petBuy(characterId, itemId);
       handleAction(result);
     } catch (e) {
-      setToast("购买失败");
+      message.error("购买失败");
       console.error(e);
     } finally {
       setBusy(false);
     }
   };
 
-  // 约会
   const handleDate = async (activityId: string) => {
     if (busy) return;
     setBusy(true);
@@ -300,14 +314,13 @@ export default function Sidebar({
       const result = await petDate(characterId, activityId);
       handleAction(result);
     } catch (e) {
-      setToast("约会失败");
+      message.error("约会失败");
       console.error(e);
     } finally {
       setBusy(false);
     }
   };
 
-  // 猜拳
   const handleGame = async (choice: "rock" | "scissors" | "paper") => {
     if (busy) return;
     setBusy(true);
@@ -316,14 +329,13 @@ export default function Sidebar({
       setGameResult(result);
       handleAction(result);
     } catch (e) {
-      setToast("游戏失败");
+      message.error("游戏失败");
       console.error(e);
     } finally {
       setBusy(false);
     }
   };
 
-  // 猜数字：开始新游戏
   const handleGuessStart = async (range?: number) => {
     if (busy) return;
     const r = range ?? guessRange;
@@ -342,22 +354,21 @@ export default function Sidebar({
       });
       setGuessInput("");
       if (data.resumed) {
-        setToast(`继续进行中的游戏（1-${data.range}）`);
+        message.info(`继续进行中的游戏（1-${data.range}）`);
       }
     } catch (e) {
-      setToast("开始游戏失败");
+      message.error("开始游戏失败");
       console.error(e);
     } finally {
       setBusy(false);
     }
   };
 
-  // 猜数字：提交猜测
   const handleGuess = async () => {
     if (busy || !guessGame || guessGame.finished) return;
     const num = parseInt(guessInput, 10);
     if (isNaN(num)) {
-      setToast("请输入数字");
+      message.warning("请输入数字");
       return;
     }
     setBusy(true);
@@ -376,39 +387,36 @@ export default function Sidebar({
       setGuessInput("");
       handleAction(result);
     } catch (e) {
-      setToast(e instanceof Error ? e.message : "猜数字失败");
+      message.error(e instanceof Error ? e.message : "猜数字失败");
       console.error(e);
     } finally {
       setBusy(false);
     }
   };
 
-  // 幸运转盘：投注并旋转
   const handleWheel = async () => {
     if (busy || wheelSpinning) return;
     const bet = parseInt(wheelBet, 10);
     if (isNaN(bet) || bet <= 0) {
-      setToast("请输入有效的投注金额");
+      message.warning("请输入有效的投注金额");
       return;
     }
     if ((petState?.coins ?? 0) < bet) {
-      setToast("金币不足");
+      message.warning("金币不足");
       return;
     }
     setWheelSpinning(true);
     setBusy(true);
     try {
       const result = await petWheel(characterId, bet);
-      // 根据结果扇区计算旋转角度
       const segIdx = result.segmentIndex ?? 0;
       const newRotation = calcWheelRotation(segIdx, wheelRotation);
       setWheelRotation(newRotation);
-      // 等待转盘动画结束（CSS transition 3秒）
       await new Promise((resolve) => setTimeout(resolve, 3100));
       setWheelResult(result);
       handleAction(result);
     } catch (e) {
-      setToast(e instanceof Error ? e.message : "幸运转盘失败");
+      message.error(e instanceof Error ? e.message : "幸运转盘失败");
       console.error(e);
     } finally {
       setWheelSpinning(false);
@@ -419,129 +427,129 @@ export default function Sidebar({
   const today = new Date().toISOString().slice(0, 10);
   const signedToday = petState?.lastSignDate === today;
 
-  // 图标按钮
-  const TabButton = ({ tab, label }: { tab: Tab; label: string }) => (
-    <button
-      className={`sidebar-tab-btn${activeTab === tab ? " active" : ""}`}
-      onClick={() => {
-        setActiveTab(tab);
-        setCollapsed(false);
-      }}
-      title={label}
-    >
-      <span className="sidebar-tab-icon">{getTabIcon(tab)}</span>
-      <span className="sidebar-tab-label">{label}</span>
-    </button>
-  );
-
   return (
     <div className={`sidebar${collapsed ? " collapsed" : ""}`}>
       {/* 图标导航列 */}
       <div className="sidebar-nav">
-        <button
-          className="sidebar-toggle"
-          onClick={() => setCollapsed((v) => !v)}
-          title={collapsed ? "展开" : "收起"}
-        >
-          {collapsed ? "▶" : "◀"}
-        </button>
-        <TabButton tab="status" label="状态" />
-        <TabButton tab="shop" label="商店" />
-        <TabButton tab="date" label="约会" />
-        <TabButton tab="game" label="游戏" />
-        <TabButton tab="achievement" label="成就" />
-        <TabButton tab="diary" label="日记" />
+        <Tooltip title={collapsed ? "展开" : "收起"} placement="right">
+          <button
+            className="sidebar-toggle"
+            onClick={() => setCollapsed((v) => !v)}
+          >
+            {collapsed ? <ChevronRight size={20} /> : <ChevronLeft size={20} />}
+          </button>
+        </Tooltip>
+        {TAB_CONFIG.map(({ key, label, icon }) => (
+          <Tooltip key={key} title={label} placement="right">
+            <button
+              className={`sidebar-tab-btn${activeTab === key ? " active" : ""}`}
+              onClick={() => {
+                setActiveTab(key);
+                setCollapsed(false);
+              }}
+            >
+              <span className="sidebar-tab-icon">{icon}</span>
+              <span className="sidebar-tab-label">{label}</span>
+            </button>
+          </Tooltip>
+        ))}
       </div>
 
       {/* 内容面板 */}
       {!collapsed && (
         <div className="sidebar-content" style={{ width: `${contentWidth}px` }}>
-          {/* 拖拽调整宽度的手柄 */}
           <div
             className="sidebar-resize-handle"
             onMouseDown={startSidebarDrag}
-            title="拖拽调整宽度"
           />
-          {/* 金币栏（始终显示在顶部） */}
+
+          {/* 金币栏 */}
           <div className="sidebar-coins">
-            <span className="coin-icon">💰</span>
+            <Coins size={20} color="#ffd54f" />
             <span className="coin-value">{petState?.coins ?? 0}</span>
-            <span className="coin-label">金币</span>
+            <Text type="secondary" style={{ fontSize: 13 }}>金币</Text>
           </div>
 
           {/* 状态面板 */}
           {activeTab === "status" && (
             <div className="sidebar-panel">
-              <h3 className="panel-title">她的状态</h3>
+              <Title level={5} style={{ margin: "0 0 12px 0" }}>她的状态</Title>
 
-              {/* 心情值 */}
               <MoodDisplay mood={mood} />
 
-              {/* 签到 */}
-              <button
-                className={`sign-btn${signedToday ? " signed" : ""}`}
+              <Button
+                type={signedToday ? "default" : "primary"}
+                icon={<ClipboardCheck size={16} />}
                 onClick={handleSign}
                 disabled={busy || signedToday}
+                block
+                style={{ marginBottom: 16 }}
               >
-                {signedToday ? "✓ 今日已签到" : "📋 每日签到 +20"}
-              </button>
+                {signedToday ? "今日已签到" : "每日签到 +20"}
+              </Button>
 
               {/* 状态条 */}
-              <div className="status-bars">
-                <div className="status-row">
-                  <div className="status-row-label">
-                    <span>🍖 饱腹感</span>
-                    <span>{petState ? getHungerLabel(petState.hunger) : ""}</span>
+              <Space direction="vertical" style={{ width: "100%", marginBottom: 12 }} size={12}>
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <Space>
+                      <UtensilsCrossed size={16} color="#8d6e63" />
+                      <Text style={{ fontSize: 13 }}>饱腹感</Text>
+                    </Space>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {petState ? getHungerLabel(petState.hunger) : ""}
+                    </Text>
                   </div>
-                  <div className="status-bar">
-                    <div
-                      className="status-bar-fill"
-                      style={{
-                        width: `${petState?.hunger ?? 0}%`,
-                        background: getHungerColor(petState?.hunger ?? 70),
-                      }}
-                    />
-                  </div>
+                  <Progress
+                    percent={petState?.hunger ?? 0}
+                    size="small"
+                    strokeColor={getHungerColor(petState?.hunger ?? 70)}
+                  />
                 </div>
 
-                <div className="status-row">
-                  <div className="status-row-label">
-                    <span>😴 疲劳度</span>
-                    <span>{petState ? getFatigueLabel(petState.fatigue) : ""}</span>
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <Space>
+                      <Moon size={16} color="#5c6bc0" />
+                      <Text style={{ fontSize: 13 }}>疲劳度</Text>
+                    </Space>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {petState ? getFatigueLabel(petState.fatigue) : ""}
+                    </Text>
                   </div>
-                  <div className="status-bar">
-                    <div
-                      className="status-bar-fill"
-                      style={{
-                        width: `${petState?.fatigue ?? 0}%`,
-                        background: getFatigueColor(petState?.fatigue ?? 20),
-                      }}
-                    />
-                  </div>
+                  <Progress
+                    percent={petState?.fatigue ?? 0}
+                    size="small"
+                    strokeColor={getFatigueColor(petState?.fatigue ?? 20)}
+                  />
                 </div>
 
-                <div className="status-row">
-                  <div className="status-row-label">
-                    <span>💕 亲密度</span>
-                    <span>{petState ? getIntimacyLabel(petState.intimacy) : ""}</span>
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <Space>
+                      <Heart size={16} color="#e91e63" />
+                      <Text style={{ fontSize: 13 }}>亲密度</Text>
+                    </Space>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {petState ? getIntimacyLabel(petState.intimacy) : ""}
+                    </Text>
                   </div>
-                  <div className="status-bar">
-                    <div
-                      className="status-bar-fill"
-                      style={{
-                        width: `${petState?.intimacy ?? 0}%`,
-                        background: getIntimacyColor(),
-                      }}
-                    />
-                  </div>
+                  <Progress
+                    percent={petState?.intimacy ?? 0}
+                    size="small"
+                    strokeColor="#e91e63"
+                  />
                 </div>
-              </div>
+              </Space>
 
-              <div className="status-tip">
-                💡 多聊天可以赚金币，每10条消息奖励5金币
-              </div>
+              <Alert
+                type="info"
+                showIcon
+                icon={<Lightbulb size={16} />}
+                message="多聊天可以赚金币，每10条消息奖励5金币"
+                style={{ marginBottom: 12, fontSize: 12 }}
+              />
 
-              {/* 心情历史图 */}
               <MoodHistoryChart characterId={characterId} />
             </div>
           )}
@@ -549,213 +557,223 @@ export default function Sidebar({
           {/* 商店面板 */}
           {activeTab === "shop" && (
             <div className="sidebar-panel">
-              <h3 className="panel-title">商店</h3>
-              <div className="shop-list">
+              <Title level={5} style={{ margin: "0 0 12px 0" }}>商店</Title>
+              <Space direction="vertical" style={{ width: "100%" }} size={8}>
                 {shopItems.map((item) => {
                   const canAfford = (petState?.coins ?? 0) >= item.price;
                   return (
-                    <div key={item.id} className="shop-item">
-                      <span className="shop-item-emoji">{item.emoji}</span>
-                      <div className="shop-item-info">
-                        <span className="shop-item-name">{item.name}</span>
-                        <span className="shop-item-desc">{item.desc}</span>
+                    <Card
+                      key={item.id}
+                      size="small"
+                      styles={{ body: { padding: "10px 12px" } }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <span style={{ fontSize: 28 }}>{item.emoji}</span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <Text strong>{item.name}</Text>
+                          <br />
+                          <Text type="secondary" style={{ fontSize: 12 }}>{item.desc}</Text>
+                        </div>
+                        <Button
+                          type="primary"
+                          size="small"
+                          disabled={busy || !canAfford}
+                          onClick={() => handleBuy(item.id)}
+                        >
+                          {item.price} 💰
+                        </Button>
                       </div>
-                      <button
-                        className="shop-item-buy"
-                        disabled={busy || !canAfford}
-                        onClick={() => handleBuy(item.id)}
-                      >
-                        {item.price}💰
-                      </button>
-                    </div>
+                    </Card>
                   );
                 })}
-              </div>
+              </Space>
             </div>
           )}
 
           {/* 约会面板 */}
           {activeTab === "date" && (
             <div className="sidebar-panel">
-              <h3 className="panel-title">约会</h3>
-              <div className="date-list">
+              <Title level={5} style={{ margin: "0 0 12px 0" }}>约会</Title>
+              <Space direction="vertical" style={{ width: "100%" }} size={8}>
                 {dateActivities.map((act) => (
-                  <div key={act.id} className="date-item">
-                    <span className="date-item-emoji">{act.emoji}</span>
-                    <div className="date-item-info">
-                      <span className="date-item-name">{act.name}</span>
-                      <span className="date-item-meta">⏱ {act.duration}</span>
+                  <Card
+                    key={act.id}
+                    size="small"
+                    styles={{ body: { padding: "10px 12px" } }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ fontSize: 28 }}>{act.emoji}</span>
+                      <div style={{ flex: 1 }}>
+                        <Text strong>{act.name}</Text>
+                        <br />
+                        <Tag icon={<Clock size={12} />} style={{ fontSize: 11, marginTop: 2 }}>
+                          {act.duration}
+                        </Tag>
+                      </div>
+                      <Button
+                        type="primary"
+                        size="small"
+                        icon={<Play size={14} />}
+                        disabled={busy}
+                        onClick={() => handleDate(act.id)}
+                      >
+                        出发
+                      </Button>
                     </div>
-                    <button
-                      className="date-item-go"
-                      disabled={busy}
-                      onClick={() => handleDate(act.id)}
-                    >
-                      出发
-                    </button>
-                  </div>
+                  </Card>
                 ))}
-              </div>
+              </Space>
             </div>
           )}
 
           {/* 游戏面板 */}
           {activeTab === "game" && (
             <div className="sidebar-panel">
-              {/* 游戏子标签 */}
-              <div className="game-sub-tabs">
-                <button
-                  className={`game-sub-tab${gameSubTab === "rps" ? " active" : ""}`}
-                  onClick={() => setGameSubTab("rps")}
-                >
-                  ✊ 猜拳
-                </button>
-                <button
-                  className={`game-sub-tab${gameSubTab === "guess" ? " active" : ""}`}
-                  onClick={() => setGameSubTab("guess")}
-                >
-                  🔢 猜数字
-                </button>
-                <button
-                  className={`game-sub-tab${gameSubTab === "wheel" ? " active" : ""}`}
-                  onClick={() => setGameSubTab("wheel")}
-                >
-                  🎰 转盘
-                </button>
-              </div>
+              <Segmented
+                value={gameSubTab}
+                onChange={(v) => setGameSubTab(v as GameSubTab)}
+                options={[
+                  { label: "猜拳", value: "rps" },
+                  { label: "猜数字", value: "guess" },
+                  { label: "转盘", value: "wheel" },
+                ]}
+                block
+                style={{ marginBottom: 16 }}
+              />
 
-              {/* 猜拳游戏 */}
+              {/* 猜拳 */}
               {gameSubTab === "rps" && (
-                <div className="game-area">
-                  <p className="game-desc">赢一局 +10 金币，平局 +2 金币</p>
+                <div>
+                  <Text type="secondary" style={{ fontSize: 12, display: "block", marginBottom: 12 }}>
+                    赢一局 +10 金币，平局 +2 金币
+                  </Text>
 
-                  {/* 上次结果 */}
                   {gameResult && (
-                    <div className={`game-result ${gameResult.result}`}>
-                      <div className="game-result-hands">
-                        <span className="game-hand">你: {gameResult.userEmoji}</span>
-                        <span className="game-vs">VS</span>
-                        <span className="game-hand">她: {gameResult.aiEmoji}</span>
+                    <Card
+                      size="small"
+                      style={{ marginBottom: 12, textAlign: "center" }}
+                      styles={{ body: { padding: 12 } }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 16, marginBottom: 8 }}>
+                        <span>你: {gameResult.userEmoji}</span>
+                        <Text type="secondary">VS</Text>
+                        <span>她: {gameResult.aiEmoji}</span>
                       </div>
-                      <div className="game-result-text">
+                      <Text strong style={{
+                        color: gameResult.result === "win" ? "#43a047" :
+                               gameResult.result === "lose" ? "#e53935" : "#757575"
+                      }}>
                         {gameResult.result === "win" && "🎉 你赢了！"}
                         {gameResult.result === "lose" && "😅 你输了～"}
                         {gameResult.result === "draw" && "🤝 平局！"}
                         {gameResult.reward ? ` +${gameResult.reward}💰` : ""}
-                      </div>
-                    </div>
+                      </Text>
+                    </Card>
                   )}
 
-                  {/* 选择按钮 */}
-                  <div className="game-choices">
-                    <button
-                      className="game-choice"
+                  <Space style={{ width: "100%", justifyContent: "center" }} size={12}>
+                    <Button
+                      size="large"
                       disabled={busy}
                       onClick={() => handleGame("rock")}
+                      style={{ width: 72, height: 72, fontSize: 32 }}
                     >
                       ✊
-                      <span>石头</span>
-                    </button>
-                    <button
-                      className="game-choice"
+                    </Button>
+                    <Button
+                      size="large"
                       disabled={busy}
                       onClick={() => handleGame("scissors")}
+                      style={{ width: 72, height: 72, fontSize: 32 }}
                     >
                       ✌️
-                      <span>剪刀</span>
-                    </button>
-                    <button
-                      className="game-choice"
+                    </Button>
+                    <Button
+                      size="large"
                       disabled={busy}
                       onClick={() => handleGame("paper")}
+                      style={{ width: 72, height: 72, fontSize: 32 }}
                     >
                       ✋
-                      <span>布</span>
-                    </button>
-                  </div>
+                    </Button>
+                  </Space>
                 </div>
               )}
 
-              {/* 猜数字游戏 */}
+              {/* 猜数字 */}
               {gameSubTab === "guess" && (
-                <div className="game-area">
-                  <p className="game-desc">猜中目标数字赢金币，剩余次数越多奖励越高</p>
+                <div>
+                  <Text type="secondary" style={{ fontSize: 12, display: "block", marginBottom: 12 }}>
+                    猜中目标数字赢金币，剩余次数越多奖励越高
+                  </Text>
 
-                  {/* 范围选择 + 开始按钮 */}
                   {!guessGame?.finished && guessGame && (
-                    <div className="guess-info">
-                      <span>范围 1-{guessGame.range}</span>
-                      <span>剩余 {guessGame.attemptsLeft}/{guessGame.maxAttempts} 次</span>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+                      <Tag color="blue">范围 1-{guessGame.range}</Tag>
+                      <Tag color="orange">剩余 {guessGame.attemptsLeft}/{guessGame.maxAttempts}</Tag>
                     </div>
                   )}
 
                   {!guessGame && (
-                    <>
-                      <div className="guess-range-select">
-                        <label className="guess-range-label">选择难度：</label>
-                        <div className="guess-range-buttons">
-                          <button
-                            className={`guess-range-btn${guessRange === 30 ? " active" : ""}`}
-                            onClick={() => setGuessRange(30)}
-                          >
-                            简单<br />1-30
-                          </button>
-                          <button
-                            className={`guess-range-btn${guessRange === 50 ? " active" : ""}`}
-                            onClick={() => setGuessRange(50)}
-                          >
-                            中等<br />1-50
-                          </button>
-                          <button
-                            className={`guess-range-btn${guessRange === 100 ? " active" : ""}`}
-                            onClick={() => setGuessRange(100)}
-                          >
-                            困难<br />1-100
-                          </button>
-                        </div>
-                      </div>
-                      <button
-                        className="guess-start-btn"
+                    <div>
+                      <Text style={{ fontSize: 13, display: "block", marginBottom: 8 }}>选择难度：</Text>
+                      <Segmented
+                        value={guessRange}
+                        onChange={(v) => setGuessRange(v as number)}
+                        options={[
+                          { label: "简单 1-30", value: 30 },
+                          { label: "中等 1-50", value: 50 },
+                          { label: "困难 1-100", value: 100 },
+                        ]}
+                        block
+                        style={{ marginBottom: 12 }}
+                      />
+                      <Button
+                        type="primary"
+                        icon={<Play size={14} />}
                         disabled={busy}
                         onClick={() => handleGuessStart()}
+                        block
                       >
                         开始游戏
-                      </button>
-                    </>
+                      </Button>
+                    </div>
                   )}
 
-                  {/* 游戏进行中 */}
                   {guessGame && !guessGame.finished && (
-                    <div className="guess-playing">
-                      {/* 历史提示 */}
+                    <div>
                       {guessGame.hint && guessGame.lastGuess !== null && (
-                        <div className={`guess-hint ${guessGame.hint}`}>
-                          {guessGame.hint === "big" && `⬆️ ${guessGame.lastGuess} 猜大了`}
-                          {guessGame.hint === "small" && `⬇️ ${guessGame.lastGuess} 猜小了`}
-                        </div>
+                        <Alert
+                          type={guessGame.hint === "big" ? "warning" : "info"}
+                          message={`${guessGame.lastGuess} ${guessGame.hint === "big" ? "猜大了 ⬆️" : "猜小了 ⬇️"}`}
+                          style={{ marginBottom: 8, fontSize: 13 }}
+                          showIcon
+                        />
                       )}
-                      <div className="guess-input-row">
-                        <input
-                          type="number"
-                          className="guess-input"
-                          value={guessInput}
-                          onChange={(e) => setGuessInput(e.target.value)}
-                          onKeyDown={(e) => { if (e.key === "Enter") handleGuess(); }}
+                      <Space.Compact style={{ width: "100%", marginBottom: 8 }}>
+                        <InputNumber
+                          style={{ flex: 1 }}
+                          value={guessInput ? Number(guessInput) : undefined}
+                          onChange={(v) => setGuessInput(v ? String(v) : "")}
+                          onPressEnter={handleGuess}
                           placeholder={`1-${guessGame.range}`}
                           min={1}
                           max={guessGame.range}
                           disabled={busy}
                         />
-                        <button
-                          className="guess-submit"
+                        <Button
+                          type="primary"
                           disabled={busy || !guessInput}
                           onClick={handleGuess}
                         >
                           猜
-                        </button>
-                      </div>
-                      <button
-                        className="guess-give-up"
+                        </Button>
+                      </Space.Compact>
+                      <Button
+                        size="small"
+                        danger
+                        type="text"
+                        icon={<Flag size={14} />}
                         disabled={busy}
                         onClick={() => {
                           if (confirm("放弃这局？将无法获得奖励")) {
@@ -765,43 +783,46 @@ export default function Sidebar({
                         }}
                       >
                         放弃重开
-                      </button>
+                      </Button>
                     </div>
                   )}
 
-                  {/* 游戏结束 */}
                   {guessGame?.finished && (
-                    <div className={`guess-result ${guessGame.won ? "won" : "lost"}`}>
-                      <div className="guess-result-icon">
+                    <Card
+                      style={{ textAlign: "center", marginBottom: 12 }}
+                      styles={{ body: { padding: 16 } }}
+                    >
+                      <div style={{ fontSize: 40, marginBottom: 8 }}>
                         {guessGame.won ? "🎉" : "😢"}
                       </div>
-                      <div className="guess-result-text">
+                      <Text strong style={{ display: "block", marginBottom: 12 }}>
                         {guessGame.won
                           ? `猜中了！获得 ${guessGame.reward} 金币`
-                          : `没猜中，下次加油！`}
-                      </div>
-                      <button
-                        className="guess-start-btn"
+                          : "没猜中，下次加油！"}
+                      </Text>
+                      <Button
+                        type="primary"
+                        icon={<RefreshCw size={14} />}
                         disabled={busy}
                         onClick={() => handleGuessStart()}
                       >
                         再来一局
-                      </button>
-                    </div>
+                      </Button>
+                    </Card>
                   )}
                 </div>
               )}
 
               {/* 幸运转盘 */}
               {gameSubTab === "wheel" && (
-                <div className="game-area">
-                  <p className="game-desc">投注金币旋转转盘，中了按倍数奖励，没中扣除本金</p>
+                <div>
+                  <Text type="secondary" style={{ fontSize: 12, display: "block", marginBottom: 12 }}>
+                    投注金币旋转转盘，中了按倍数奖励，没中扣除本金
+                  </Text>
 
                   {/* 真实转盘 */}
                   <div className="wheel-stage">
-                    {/* 指针（固定在顶部） */}
                     <div className="wheel-pointer" />
-                    {/* 旋转转盘 */}
                     <div
                       className="wheel-circle"
                       style={{
@@ -818,7 +839,7 @@ export default function Sidebar({
                           <div
                             key={i}
                             className="wheel-label"
-                            style={{ transform: `rotate(${center}deg) translateY(-70px)` }}
+                            style={{ transform: `rotate(${center}deg) translateY(-95px)` }}
                           >
                             <span className="wheel-label-emoji">{seg.emoji}</span>
                             <span className="wheel-label-text">{seg.label}</span>
@@ -826,13 +847,11 @@ export default function Sidebar({
                         );
                       })}
                     </div>
-                    {/* 中心圆 */}
                     <div className="wheel-center">
                       {wheelSpinning ? "🎯" : wheelResult ? wheelResult.segmentEmoji : "🎰"}
                     </div>
                   </div>
 
-                  {/* 结果显示 */}
                   {wheelResult && !wheelSpinning && (
                     <div
                       className="wheel-result-banner"
@@ -848,39 +867,46 @@ export default function Sidebar({
                     </div>
                   )}
 
-                  {/* 投注输入 */}
-                  <div className="wheel-input-row">
-                    <input
-                      type="number"
-                      className="wheel-input"
-                      value={wheelBet}
-                      onChange={(e) => setWheelBet(e.target.value)}
+                  <Space.Compact style={{ width: "100%", marginBottom: 8 }}>
+                    <InputNumber
+                      style={{ flex: 1 }}
+                      value={wheelBet ? Number(wheelBet) : undefined}
+                      onChange={(v) => setWheelBet(v ? String(v) : "")}
                       placeholder="投注金额"
                       min={1}
                       max={petState?.coins ?? 0}
                       disabled={busy || wheelSpinning}
                     />
-                    <button
-                      className="wheel-spin-btn"
+                    <Button
+                      type="primary"
                       disabled={busy || wheelSpinning}
                       onClick={handleWheel}
                     >
                       {wheelSpinning ? "旋转中..." : "旋转"}
-                    </button>
-                  </div>
+                    </Button>
+                  </Space.Compact>
 
-                  {/* 快捷投注 */}
-                  <div className="wheel-quick-bets">
-                    <button onClick={() => setWheelBet("10")} disabled={busy}>10</button>
-                    <button onClick={() => setWheelBet("50")} disabled={busy}>50</button>
-                    <button onClick={() => setWheelBet("100")} disabled={busy}>100</button>
-                    <button
-                      onClick={() => setWheelBet(String(petState?.coins ?? 0))}
+                  <Space style={{ width: "100%" }} size={4}>
+                    {[10, 50, 100].map((amt) => (
+                      <Button
+                        key={amt}
+                        size="small"
+                        disabled={busy}
+                        onClick={() => setWheelBet(String(amt))}
+                        style={{ flex: 1 }}
+                      >
+                        {amt}
+                      </Button>
+                    ))}
+                    <Button
+                      size="small"
                       disabled={busy}
+                      onClick={() => setWheelBet(String(petState?.coins ?? 0))}
+                      style={{ flex: 1 }}
                     >
                       全部
-                    </button>
-                  </div>
+                    </Button>
+                  </Space>
                 </div>
               )}
             </div>
@@ -889,7 +915,7 @@ export default function Sidebar({
           {/* 成就面板 */}
           {activeTab === "achievement" && (
             <div className="sidebar-panel">
-              <h3 className="panel-title">成就</h3>
+              <Title level={5} style={{ margin: "0 0 12px 0" }}>成就</Title>
               <AchievementsPanel
                 characterId={characterId}
                 refreshKey={achievementRefreshKey}
@@ -900,7 +926,7 @@ export default function Sidebar({
           {/* 日记面板 */}
           {activeTab === "diary" && (
             <div className="sidebar-panel">
-              <h3 className="panel-title">她的日记</h3>
+              <Title level={5} style={{ margin: "0 0 12px 0" }}>她的日记</Title>
               <DiaryPanel
                 characterId={characterId}
                 refreshKey={achievementRefreshKey}
@@ -909,25 +935,6 @@ export default function Sidebar({
           )}
         </div>
       )}
-
-      {/* Toast 提示 */}
-      {toast && (
-        <div className="sidebar-toast">
-          {toast}
-        </div>
-      )}
     </div>
   );
-}
-
-// 标签图标
-function getTabIcon(tab: Tab): string {
-  switch (tab) {
-    case "status": return "📊";
-    case "shop": return "🛒";
-    case "date": return "💕";
-    case "game": return "🎮";
-    case "achievement": return "🏆";
-    case "diary": return "📔";
-  }
 }

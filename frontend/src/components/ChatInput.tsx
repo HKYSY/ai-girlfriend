@@ -1,4 +1,6 @@
 import { useState, KeyboardEvent } from "react";
+import { Input, Button } from "antd";
+import { Send } from "lucide-react";
 
 interface Props {
   onSend: (message: string) => void;
@@ -24,17 +26,23 @@ export default function ChatInput({ onSend, disabled }: Props) {
 
   return (
     <div className="chat-input">
-      <input
-        type="text"
+      <Input
         value={text}
         placeholder="跟她说点什么…"
         onChange={(e) => setText(e.target.value)}
         onKeyDown={handleKeyDown}
         disabled={disabled}
+        size="large"
       />
-      <button onClick={handleSend} disabled={disabled || !text.trim()}>
+      <Button
+        type="primary"
+        size="large"
+        icon={<Send size={16} />}
+        onClick={handleSend}
+        disabled={disabled || !text.trim()}
+      >
         发送
-      </button>
+      </Button>
     </div>
   );
 }

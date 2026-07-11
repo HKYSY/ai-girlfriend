@@ -1,4 +1,6 @@
 import { useEffect, useRef } from "react";
+import { Avatar, Spin } from "antd";
+import { User } from "lucide-react";
 
 export interface Message {
   role: "user" | "assistant";
@@ -14,7 +16,6 @@ interface Props {
 export default function ChatWindow({ messages, loading, characterName }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // 有新消息时自动滚到底部
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
@@ -24,19 +25,24 @@ export default function ChatWindow({ messages, loading, characterName }: Props) 
       {messages.map((msg, i) => (
         <div key={i} className={`message-row ${msg.role}`}>
           {msg.role === "assistant" && (
-            <div className="message-avatar">
+            <Avatar size={36} style={{ background: "#e91e63", flexShrink: 0 }}>
               {characterName?.charAt(0) || "念"}
-            </div>
+            </Avatar>
+          )}
+          {msg.role === "user" && (
+            <Avatar size={36} icon={<User size={18} />} style={{ background: "#5c6bc0", flexShrink: 0 }} />
           )}
           <div className={`message ${msg.role}`}>{msg.content}</div>
         </div>
       ))}
       {loading && (
         <div className="message-row assistant">
-          <div className="message-avatar">
+          <Avatar size={36} style={{ background: "#e91e63", flexShrink: 0 }}>
             {characterName?.charAt(0) || "念"}
+          </Avatar>
+          <div className="message assistant typing">
+            <Spin size="small" /> 她正在输入…
           </div>
-          <div className="message assistant typing">她正在输入…</div>
         </div>
       )}
       <div ref={bottomRef} />
