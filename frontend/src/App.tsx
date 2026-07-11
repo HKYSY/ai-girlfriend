@@ -3,20 +3,23 @@ import "./App.css";
 import ChatWindow, { type Message } from "./components/ChatWindow";
 import ChatInput from "./components/ChatInput";
 import Live2DCanvas from "./components/Live2DCanvas";
-import MoodDisplay from "./components/MoodDisplay";
 import SettingsPanel from "./components/SettingsPanel";
+import Sidebar from "./components/Sidebar";
 import {
   streamChat,
   streamProactive,
+  streamPetAIReply,
   moodDecay,
+  petDecay,
   getCharacters,
   getCharacterDetail,
   createCharacter,
   updateCharacter,
   deleteCharacter,
   clearConversation,
+  generateDiary,
 } from "./api";
-import type { Character } from "./api";
+import type { Character, PetState } from "./api";
 
 // 默认分栏比例（Live2D 占比）
 const DEFAULT_SPLIT_RATIO = 0.55;
@@ -34,6 +37,16 @@ function loadSplitRatio(): number {
   return DEFAULT_SPLIT_RATIO;
 }
 
+// 心情值 → emoji
+function moodToEmoji(mood: number): string {
+  if (mood >= 90) return "😍";
+  if (mood >= 70) return "😊";
+  if (mood >= 50) return "🙂";
+  if (mood >= 30) return "😟";
+  if (mood >= 10) return "😢";
+  return "😭";
+}
+
 export default function App() {
   // ========== 角色列表与当前角色 ==========
   const [characters, setCharacters] = useState<Character[]>([]);
@@ -46,10 +59,21 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [mood, setMood] = useState(60);
   const [emotion, setEmotion] = useState<string | null>(null);
+  const [bubbleText, setBubbleText] = useState<{ id: number; text: string } | null>(null);
 
   // ========== UI 状态 ==========
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [splitRatio, setSplitRatio] = useState(loadSplitRatio);
+  // 主动消息开关（关机按钮）：false 时 AI 不会自动发消息
+  const [proactiveEnabled, setProactiveEnabled] = useState(() => {
+    return localStorage.getItem("proactiveEnabled") !== "false";
+  });
+  // ref 始终指向最新值（供 setInterval 闭包读取）
+  const proactiveEnabledRef = useRef(proactiveEnabled);
+  proactiveEnabledRef.current = proactiveEnabled;
+
+  // ========== 桌宠状态 ==========
+  const [petState, setPetState] = useState<PetState | null>(null);
 
   // 流式消息追踪
   const assistantStartedRef = useRef(false);
@@ -117,11 +141,27 @@ export default function App() {
     }
   };
 
+  // ========== 每天首次打开时自动生成日记 ==========
+  useEffect(() => {
+    if (!currentCharacter) return;
+    // 后端会判断今天是否已有日记，已有则直接返回，不会重复生成
+    generateDiary(currentCharacter.id)
+      .then((result) => {
+        if (result.ok && result.entry && !result.alreadyExists) {
+          console.log(`[diary] 已为 ${currentCharacter.name} 生成今日日记`);
+        }
+      })
+      .catch((e) => console.error("[diary] 自动生成失败:", e));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentCharacter?.id]);
+
   // ========== 主动消息定时器 ==========
   useEffect(() => {
     if (!currentCharacter) return;
 
     const proactiveTimer = window.setInterval(() => {
+      // 关机状态下不触发主动消息
+      if (!proactiveEnabledRef.current) return;
       const elapsed = Date.now() - lastActivityRef.current;
       if (elapsed >= PROACTIVE_DELAY && !proactiveActiveRef.current && !loading) {
         proactiveActiveRef.current = true;
@@ -129,7 +169,7 @@ export default function App() {
       }
     }, TIMER_CHECK_INTERVAL);
 
-    // 心情衰减定时器
+    // 心情衰减定时器（同时触发桌宠状态衰减：饱腹感下降、疲劳度恢复、亲密度微降）
     const decayTimer = window.setInterval(() => {
       if (proactiveActiveRef.current && currentCharacter && !loading) {
         moodDecay(currentCharacter.id)
@@ -147,6 +187,15 @@ export default function App() {
             console.log(`[mood-decay] ${data.mood} (${data.level})`);
           })
           .catch((e) => console.error("[mood-decay] 失败:", e));
+        // 桌宠状态衰减（后端至少 1 小时才真正衰减，否则 no-op）
+        petDecay(currentCharacter.id)
+          .then((data) => {
+            if (data.decayed) {
+              setPetState(data.petState);
+              console.log(`[pet-decay] ${data.hoursPassed}h 已衰减`);
+            }
+          })
+          .catch((e) => console.error("[pet-decay] 失败:", e));
       }
     }, MOOD_DECAY_INTERVAL);
 
@@ -250,6 +299,13 @@ export default function App() {
               }
               return prev;
             });
+          }
+        },
+        onPetState: (state, coinReward) => {
+          setPetState(state);
+          if (coinReward && coinReward > 0) {
+            // 聊天金币奖励提示（轻量，不弹消息，仅控制台日志）
+            console.log(`[pet] 聊天奖励 ${coinReward} 金币`);
           }
         },
         onDone: () => setLoading(false),
@@ -367,6 +423,95 @@ export default function App() {
     }
   };
 
+  // ========== 切换主动消息开关 ==========
+  const toggleProactive = () => {
+    setProactiveEnabled((v) => !v);
+    // 关机时重置主动消息状态
+    if (proactiveEnabled) {
+      proactiveActiveRef.current = false;
+    }
+  };
+
+  // ========== 桌宠操作触发的 AI 联动回复（队列化，确保一一对应） ==========
+  const aiReplyQueueRef = useRef<string[]>([]);
+  const aiReplyBusyRef = useRef(false);
+
+  const processAIReplyQueue = useCallback(async () => {
+    if (aiReplyBusyRef.current) return;
+    const nextContext = aiReplyQueueRef.current.shift();
+    if (!nextContext || !currentCharacter) return;
+
+    aiReplyBusyRef.current = true;
+    assistantStartedRef.current = false;
+    setLoading(true);
+    try {
+      await streamPetAIReply(currentCharacter.id, nextContext, {
+        onMood: (m) => {
+          setMood(m);
+          setCharacters((prev) =>
+            prev.map((c) =>
+              c.id === currentCharacter.id ? { ...c, mood: m } : c
+            )
+          );
+          setCurrentCharacter((prev) => (prev ? { ...prev, mood: m } : prev));
+        },
+        onEmotion: (emo) => setEmotion(emo),
+        onText: (chunk) => {
+          if (!assistantStartedRef.current) {
+            assistantStartedRef.current = true;
+            setMessages((prev) => [
+              ...prev,
+              { role: "assistant", content: chunk },
+            ]);
+            setLoading(false);
+          } else {
+            setMessages((prev) => {
+              const last = prev[prev.length - 1];
+              if (last && last.role === "assistant") {
+                return [
+                  ...prev.slice(0, -1),
+                  { role: "assistant", content: last.content + chunk },
+                ];
+              }
+              return prev;
+            });
+          }
+        },
+        onDone: () => {
+          setLoading(false);
+          aiReplyBusyRef.current = false;
+          // 处理队列中的下一个
+          if (aiReplyQueueRef.current.length > 0) {
+            processAIReplyQueue();
+          }
+        },
+        onError: () => {
+          setLoading(false);
+          aiReplyBusyRef.current = false;
+          if (aiReplyQueueRef.current.length > 0) {
+            processAIReplyQueue();
+          }
+        },
+      });
+    } catch {
+      setLoading(false);
+      aiReplyBusyRef.current = false;
+      if (aiReplyQueueRef.current.length > 0) {
+        processAIReplyQueue();
+      }
+    }
+  }, [currentCharacter]);
+
+  const handlePetAIContext = useCallback((context: string) => {
+    aiReplyQueueRef.current.push(context);
+    processAIReplyQueue();
+  }, [processAIReplyQueue]);
+
+  // 触发 Live2D 气泡（桌宠操作时立即显示）
+  const triggerBubble = useCallback((text: string) => {
+    setBubbleText({ id: Date.now(), text });
+  }, []);
+
   // ========== 可拖动分栏 ==========
   const draggingRef = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -404,6 +549,10 @@ export default function App() {
     localStorage.setItem("splitRatio", String(splitRatio));
   }, [splitRatio]);
 
+  useEffect(() => {
+    localStorage.setItem("proactiveEnabled", String(proactiveEnabled));
+  }, [proactiveEnabled]);
+
   // ========== 加载中 ==========
   if (loadingChars) {
     return (
@@ -415,6 +564,18 @@ export default function App() {
 
   return (
     <div className="app" ref={containerRef}>
+      {/* 最左侧：桌宠侧边栏 */}
+      {currentCharacter && (
+        <Sidebar
+          characterId={currentCharacter.id}
+          petState={petState}
+          mood={mood}
+          onPetStateChange={setPetState}
+          onAIContext={handlePetAIContext}
+          onBubble={triggerBubble}
+        />
+      )}
+
       {/* 左侧：Live2D 立绘区 */}
       <div className="stage" style={{ flex: splitRatio }}>
         {/* 立绘顶部栏：角色选择器 */}
@@ -447,7 +608,7 @@ export default function App() {
                         {c.name.charAt(0)}
                       </span>
                       <span className="character-item-name">{c.name}</span>
-                      <span className="character-item-mood">{c.mood}</span>
+                      <span className="character-item-mood">{moodToEmoji(c.mood)}</span>
                       {characters.length > 1 && (
                         <button
                           className="character-item-delete"
@@ -483,13 +644,9 @@ export default function App() {
               emotion={emotion}
               position={currentCharacter.live2dPosition}
               onPositionChange={handlePositionChange}
+              bubbleText={bubbleText}
             />
           )}
-        </div>
-
-        {/* 心情浮层 */}
-        <div className="mood-overlay">
-          <MoodDisplay mood={mood} />
         </div>
       </div>
 
@@ -507,6 +664,23 @@ export default function App() {
             {currentCharacter?.name || ""}
           </span>
           <div className="chat-header-actions">
+            <button
+              className={`chat-power-btn${proactiveEnabled ? "" : " off"}`}
+              onClick={toggleProactive}
+              title={proactiveEnabled ? "主动消息已开启 · 点击关闭" : "主动消息已关闭 · 点击开启"}
+            >
+              {proactiveEnabled ? (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
+                  <line x1="12" y1="2" x2="12" y2="12" />
+                </svg>
+              ) : (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
+                </svg>
+              )}
+            </button>
             <button
               className="chat-clear-btn"
               onClick={handleClearChat}

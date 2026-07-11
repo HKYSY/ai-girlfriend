@@ -64,7 +64,7 @@ export function clampMoodChange(currentMood: number, newMood: number, maxDelta =
 }
 
 // 根据用户设置和当前心情生成系统 prompt
-export function buildPersona(settings: PersonaSettings, currentMood: number = 60): string {
+export function buildPersona(settings: PersonaSettings, currentMood: number = 60, petState?: PetState): string {
   const name = settings.name || "小念";
   const custom = settings.customPersonality?.trim();
   const moodLevel = getMoodLevel(currentMood);
@@ -122,7 +122,249 @@ export function buildPersona(settings: PersonaSettings, currentMood: number = 60
 - 情绪标签反映你这条回复的主要情绪，只能从以下8个值中选择：开心、生气、难过、撒娇、惊讶、疑惑、害羞、平静
 - 例如：【心情:65】【情绪:开心】亲爱的你回来啦～今天过得怎么样呀😊
 - 情绪标签必须与回复内容的实际情绪一致，不要乱填。
-- 每条回复必须有且仅有一个情绪标签。`;
+- 每条回复必须有且仅有一个情绪标签。${petState ? buildPetStateDescription(petState) : ""}`;
+}
+
+// ========== 宠物状态系统 ==========
+
+// 进行中的猜数字游戏状态
+export interface GuessGameState {
+  target: number;       // 目标数字
+  attemptsLeft: number; // 剩余次数
+  maxAttempts: number;  // 最大次数
+  range: number;        // 数字范围 1-range
+  startTime: string;    // 开始时间 ISO
+}
+
+export interface PetState {
+  coins: number;        // 金币
+  hunger: number;       // 饱腹感 0-100（越高越饱，低于20会饿）
+  fatigue: number;      // 疲劳度 0-100（越高越累，高于80会很累）
+  intimacy: number;     // 亲密度 0-100
+  lastSignDate: string; // 上次签到日期 YYYY-MM-DD
+  chatCount: number;    // 聊天计数（每10条得5金币）
+  lastActiveTime: string; // 上次互动时间 ISO 字符串
+  activeGuessGame?: GuessGameState | null; // 进行中的猜数字游戏
+  // 成就统计字段
+  totalChats: number;       // 累计聊天条数（不重置）
+  totalSignIns: number;    // 累计签到次数
+  totalDates: number;      // 累计约会次数
+  totalGameWins: number;   // 猜拳赢次数
+  totalGuessWins: number;  // 猜数字猜中次数
+  totalWheelJackpots: number; // 转盘×10大奖次数
+  maxIntimacy: number;     // 历史最高亲密度
+  maxCoins: number;        // 历史最高金币持有
+  unlockedAchievements: string[]; // 已解锁成就 ID 列表
+}
+
+export const DEFAULT_PET_STATE: PetState = {
+  coins: 100,
+  hunger: 70,
+  fatigue: 20,
+  intimacy: 30,
+  lastSignDate: "",
+  chatCount: 0,
+  lastActiveTime: new Date().toISOString(),
+  activeGuessGame: null,
+  totalChats: 0,
+  totalSignIns: 0,
+  totalDates: 0,
+  totalGameWins: 0,
+  totalGuessWins: 0,
+  totalWheelJackpots: 0,
+  maxIntimacy: 30,
+  maxCoins: 100,
+  unlockedAchievements: [],
+};
+
+// ========== 成就系统 ==========
+export interface AchievementTier {
+  threshold: number; // 达成阈值
+  title: string;     // 档位名称
+}
+
+export interface Achievement {
+  id: string;          // 成就 ID（含档位后缀）
+  baseId: string;      // 基础 ID（不含档位）
+  name: string;        // 成就名
+  desc: string;        // 描述
+  emoji: string;       // 图标
+  category: "chat" | "sign" | "date" | "game" | "coin" | "intimacy";
+  tiers: AchievementTier[];
+  // 从 PetState 取当前进度值
+  getValue: (s: PetState) => number;
+}
+
+// 成就定义表（每个成就含多个档位）
+export const ACHIEVEMENTS: Achievement[] = [
+  {
+    id: "chat_10", baseId: "chat", name: "初识", desc: "累计聊天", emoji: "💬",
+    category: "chat",
+    tiers: [
+      { threshold: 10, title: "聊了10条消息" },
+      { threshold: 50, title: "聊了50条消息" },
+      { threshold: 100, title: "聊了100条消息" },
+      { threshold: 500, title: "聊了500条消息" },
+    ],
+    getValue: (s) => s.totalChats,
+  },
+  {
+    id: "sign_3", baseId: "sign", name: "签到达人", desc: "累计签到", emoji: "📋",
+    category: "sign",
+    tiers: [
+      { threshold: 3, title: "签到3天" },
+      { threshold: 7, title: "签到7天" },
+      { threshold: 30, title: "签到30天" },
+    ],
+    getValue: (s) => s.totalSignIns,
+  },
+  {
+    id: "date_1", baseId: "date", name: "约会新手", desc: "累计约会", emoji: "💕",
+    category: "date",
+    tiers: [
+      { threshold: 1, title: "约会1次" },
+      { threshold: 10, title: "约会10次" },
+      { threshold: 50, title: "约会50次" },
+    ],
+    getValue: (s) => s.totalDates,
+  },
+  {
+    id: "rps_10", baseId: "rps", name: "猜拳高手", desc: "猜拳累计获胜", emoji: "✊",
+    category: "game",
+    tiers: [
+      { threshold: 10, title: "猜拳赢10次" },
+      { threshold: 50, title: "猜拳赢50次" },
+    ],
+    getValue: (s) => s.totalGameWins,
+  },
+  {
+    id: "guess_5", baseId: "guess", name: "数字大师", desc: "猜数字猜中", emoji: "🔢",
+    category: "game",
+    tiers: [
+      { threshold: 5, title: "猜中5次" },
+      { threshold: 20, title: "猜中20次" },
+    ],
+    getValue: (s) => s.totalGuessWins,
+  },
+  {
+    id: "wheel_1", baseId: "wheel", name: "幸运儿", desc: "转盘×10大奖", emoji: "🎰",
+    category: "game",
+    tiers: [
+      { threshold: 1, title: "中1次×10大奖" },
+      { threshold: 5, title: "中5次×10大奖" },
+    ],
+    getValue: (s) => s.totalWheelJackpots,
+  },
+  {
+    id: "coin_500", baseId: "coin", name: "小富翁", desc: "历史最高金币", emoji: "💰",
+    category: "coin",
+    tiers: [
+      { threshold: 500, title: "持有500金币" },
+      { threshold: 2000, title: "持有2000金币" },
+      { threshold: 10000, title: "持有10000金币" },
+    ],
+    getValue: (s) => s.maxCoins,
+  },
+  {
+    id: "intimacy_50", baseId: "intimacy", name: "心意相通", desc: "历史最高亲密度", emoji: "💖",
+    category: "intimacy",
+    tiers: [
+      { threshold: 50, title: "亲密度达50" },
+      { threshold: 80, title: "亲密度达80" },
+      { threshold: 100, title: "亲密度满100" },
+    ],
+    getValue: (s) => s.maxIntimacy,
+  },
+];
+
+// 检查并解锁新成就，返回新解锁的成就 ID 列表
+export function checkAchievements(state: PetState): string[] {
+  const newlyUnlocked: string[] = [];
+  const unlocked = new Set(state.unlockedAchievements);
+  for (const ach of ACHIEVEMENTS) {
+    const value = ach.getValue(state);
+    for (const tier of ach.tiers) {
+      const achId = `${ach.baseId}_${tier.threshold}`;
+      if (value >= tier.threshold && !unlocked.has(achId)) {
+        newlyUnlocked.push(achId);
+        unlocked.add(achId);
+      }
+    }
+  }
+  if (newlyUnlocked.length > 0) {
+    state.unlockedAchievements = Array.from(unlocked);
+  }
+  return newlyUnlocked;
+}
+
+// 商品定义
+export interface ShopItem {
+  id: string;
+  name: string;
+  emoji: string;
+  price: number;
+  desc: string;
+  effects: { hunger?: number; fatigue?: number; mood?: number; intimacy?: number };
+  category: "food" | "drink" | "gift";
+}
+
+export const SHOP_ITEMS: ShopItem[] = [
+  { id: "cake", name: "草莓蛋糕", emoji: "🍰", price: 20, desc: "甜甜的草莓蛋糕", effects: { hunger: 20, mood: 15 }, category: "food" },
+  { id: "chocolate", name: "巧克力", emoji: "🍫", price: 15, desc: "丝滑巧克力", effects: { hunger: 10, mood: 10 }, category: "food" },
+  { id: "cookie", name: "曲奇饼干", emoji: "🍪", price: 10, desc: "酥脆曲奇", effects: { hunger: 15, mood: 5 }, category: "food" },
+  { id: "coffee", name: "咖啡", emoji: "☕", price: 18, desc: "提神醒脑", effects: { fatigue: -15, mood: 5 }, category: "drink" },
+  { id: "milktea", name: "珍珠奶茶", emoji: "🧋", price: 16, desc: "香甜奶茶", effects: { hunger: 10, mood: 10 }, category: "drink" },
+  { id: "juice", name: "鲜榨果汁", emoji: "🧃", price: 12, desc: "维C满满", effects: { hunger: 5, mood: 8 }, category: "drink" },
+  { id: "flowers", name: "玫瑰花束", emoji: "💐", price: 50, desc: "浪漫之选", effects: { mood: 30, intimacy: 5 }, category: "gift" },
+  { id: "necklace", name: "水晶项链", emoji: "💎", price: 100, desc: "闪耀动人", effects: { mood: 50, intimacy: 10 }, category: "gift" },
+  { id: "bear", name: "小熊玩偶", emoji: "🧸", price: 35, desc: "可爱抱抱熊", effects: { mood: 20, intimacy: 8 }, category: "gift" },
+];
+
+// 约会活动定义
+export interface DateActivity {
+  id: string;
+  name: string;
+  emoji: string;
+  duration: string;
+  desc: string;
+  effects: { hunger?: number; fatigue?: number; mood?: number; intimacy?: number };
+}
+
+export const DATE_ACTIVITIES: DateActivity[] = [
+  { id: "stroll", name: "散步", emoji: "🚶", duration: "20分钟", desc: "一起在公园散步", effects: { intimacy: 5, mood: 10, fatigue: 5 } },
+  { id: "shopping", name: "逛街", emoji: "🛍️", duration: "30分钟", desc: "一起去逛街买东西", effects: { intimacy: 10, mood: 15, fatigue: 10 } },
+  { id: "movie", name: "看电影", emoji: "🎬", duration: "1小时", desc: "依偎在一起看电影", effects: { intimacy: 15, mood: 20, fatigue: 5 } },
+  { id: "cooking", name: "一起做饭", emoji: "🍳", duration: "30分钟", desc: "一起下厨做美食", effects: { intimacy: 8, mood: 10, hunger: 30 } },
+  { id: "gaming", name: "玩游戏", emoji: "🎮", duration: "40分钟", desc: "一起打电动", effects: { intimacy: 12, mood: 18, fatigue: 8 } },
+  { id: "stargazing", name: "看星星", emoji: "✨", duration: "30分钟", desc: "一起看星空", effects: { intimacy: 20, mood: 15, fatigue: 3 } },
+];
+
+// 生成宠物状态描述（注入 AI 系统提示词）
+export function buildPetStateDescription(petState: PetState): string {
+  const lines: string[] = [];
+
+  if (petState.hunger < 20) {
+    lines.push("你现在很饿，肚子咕咕叫，会撒娇说想吃东西");
+  } else if (petState.hunger < 40) {
+    lines.push("你有点饿了，会暗示对方想吃什么");
+  }
+
+  if (petState.fatigue > 80) {
+    lines.push("你现在非常累，会打哈欠，说话有气无力，想休息");
+  } else if (petState.fatigue > 60) {
+    lines.push("你有点累了，会小小抱怨好累");
+  }
+
+  if (petState.intimacy > 80) {
+    lines.push("你和对方的感情非常深厚，会主动表达爱意");
+  } else if (petState.intimacy > 50) {
+    lines.push("你和对方关系亲密，会自然地撒娇");
+  } else if (petState.intimacy < 20) {
+    lines.push("你和对方还不太熟，会比较矜持害羞");
+  }
+
+  if (lines.length === 0) return "";
+  return `\n\n桌宠状态感知（影响你的回复语气）：\n${lines.map((l) => `- ${l}`).join("\n")}`;
 }
 
 // 向后兼容

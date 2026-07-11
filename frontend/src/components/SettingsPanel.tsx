@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import type { Character, Live2DModelInfo, PresetModel } from "../api";
-import { getModels, getPresetModels, uploadModel, updateCharacter, clearConversation } from "../api";
+import { getModels, getPresetModels, uploadModel, deleteModel, updateCharacter, clearConversation } from "../api";
 
 interface SettingsPanelProps {
   open: boolean;
@@ -36,6 +36,7 @@ export default function SettingsPanel({
   const [uploading, setUploading] = useState(false);
   const [uploadMsg, setUploadMsg] = useState("");
   const [saving, setSaving] = useState(false);
+  const [modelName, setModelName] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -89,16 +90,29 @@ export default function SettingsPanel({
     fileInputRef.current?.click();
   };
 
+  // 删除已上传的模型
+  const handleDeleteModel = async (modelId: string, modelName: string) => {
+    if (!confirm(`确定要删除模型「${modelName}」吗？此操作不可撤销。`)) return;
+    try {
+      await deleteModel(modelId);
+      await loadModels();
+      setUploadMsg(`已删除模型：${modelName}`);
+    } catch (err) {
+      setUploadMsg(`删除失败：${err instanceof Error ? err.message : "未知错误"}`);
+    }
+  };
+
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setUploading(true);
     setUploadMsg("");
     try {
-      const result = await uploadModel(file);
+      const result = await uploadModel(file, modelName);
       setUploadMsg(`上传成功：${result.name}`);
       await loadModels();
       setModelUrl(result.modelUrl);
+      setModelName("");
     } catch (err) {
       setUploadMsg(`上传失败：${err instanceof Error ? err.message : "未知错误"}`);
     } finally {
@@ -112,8 +126,8 @@ export default function SettingsPanel({
   const isCustom = template === "custom";
 
   return (
-    <div className="settings-overlay" onClick={onClose}>
-      <div className="settings-panel" onClick={(e) => e.stopPropagation()}>
+    <div className="settings-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="settings-panel" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-header">
           <h2>角色设置</h2>
           <button className="settings-close" onClick={onClose}>
@@ -208,15 +222,34 @@ export default function SettingsPanel({
                 <p className="model-section-label">已上传模型</p>
                 <div className="model-grid">
                   {models.map((m) => (
-                    <button
+                    <div
                       key={m.id}
-                      className={`model-card ${modelUrl === m.modelUrl ? "active" : ""}`}
-                      onClick={() => setModelUrl(m.modelUrl)}
-                      title={m.name}
+                      className={`model-card-wrapper ${modelUrl === m.modelUrl ? "active" : ""}`}
                     >
-                      <span className="model-card-avatar">{m.name.charAt(0)}</span>
-                      <span className="model-card-name">{m.name}</span>
-                    </button>
+                      <button
+                        className={`model-card ${modelUrl === m.modelUrl ? "active" : ""}`}
+                        onClick={() => setModelUrl(m.modelUrl)}
+                        title={m.name}
+                      >
+                        <span className="model-card-avatar">{m.name.charAt(0)}</span>
+                        <span className="model-card-name">{m.name}</span>
+                      </button>
+                      <button
+                        className="model-delete-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteModel(m.id, m.name);
+                        }}
+                        title={`删除模型：${m.name}`}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="3 6 5 6 21 6" />
+                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                          <line x1="10" y1="11" x2="10" y2="17" />
+                          <line x1="14" y1="11" x2="14" y2="17" />
+                        </svg>
+                      </button>
+                    </div>
                   ))}
                 </div>
               </>
@@ -229,6 +262,14 @@ export default function SettingsPanel({
             >
               {uploading ? "上传中…" : "上传新模型"}
             </button>
+            <input
+              type="text"
+              className="settings-input model-name-input"
+              value={modelName}
+              onChange={(e) => setModelName(e.target.value)}
+              placeholder="模型显示名（可选，留空用文件名）"
+              maxLength={20}
+            />
             <input
               ref={fileInputRef}
               type="file"
