@@ -22,8 +22,11 @@ import {
   clearConversation,
   generateId,
   DEFAULT_POSITION,
+  backupConversation,
 } from "./storage.js";
-import type { Character } from "./storage.js";
+import type { Character, ConversationData } from "./storage.js";
+import { mergeDiaryEntries, parseMarkers } from "./utils.js";
+import type { DiaryEntry } from "./utils.js";
 
 dotenv.config();
 
@@ -63,21 +66,24 @@ if (!fs.existsSync(DIARY_DIR)) {
   fs.mkdirSync(DIARY_DIR, { recursive: true });
 }
 
-// 日记条目结构
-interface DiaryEntry {
-  date: string;       // YYYY-MM-DD
-  content: string;    // 日记内容
-  mood: number;       // 写日记时的心情
-  createdAt: string;  // 创建时间 ISO
-}
-
 // 读取角色所有日记（按日期降序）
 function loadDiary(characterId: string): DiaryEntry[] {
   try {
     const file = path.join(DIARY_DIR, `${characterId}.json`);
     if (!fs.existsSync(file)) return [];
     const entries: DiaryEntry[] = JSON.parse(fs.readFileSync(file, "utf-8"));
-    return entries.sort((a, b) => b.date.localeCompare(a.date));
+
+    // 合并同一天的多条日记（去重 + 按时间拼接）
+    const merged = mergeDiaryEntries(entries);
+    if (merged.length < entries.length) {
+      saveDiary(characterId, merged);
+      console.log(`[diary] ${characterId}: 合并重复日记 ${entries.length} -> ${merged.length}`);
+    }
+
+    return merged.sort((a, b) => {
+      if (a.date !== b.date) return b.date.localeCompare(a.date);
+      return b.createdAt.localeCompare(a.createdAt);
+    });
   } catch {
     return [];
   }
@@ -189,7 +195,9 @@ const upload = multer({
   limits: { fileSize: 100 * 1024 * 1024 },
 });
 
-const MAX_HISTORY_ROUNDS = 20;
+const MAX_HISTORY_ROUNDS = 30; // 文件最多保留60条（30轮），配合摘要机制
+const CHAT_CONTEXT_LIMIT = 30; // 发给AI的最大历史条数（最近30条）
+const SUMMARY_TRIGGER = 45;    // 超过45条触发摘要生成
 
 interface ChatMessage {
   role: string;
@@ -201,37 +209,141 @@ function sseSend(res: express.Response, data: { type: string; [key: string]: unk
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
-// 解析心情和情绪标记（隐藏格式 <|mood:XX|><|emotion:标签|>，用户不可见）
-function parseMarkers(buffer: string): { mood: number | null; emotion: string | null; rest: string } {
-  let mood: number | null = null;
-  let emotion: string | null = null;
-  let rest = buffer;
+// AI 情感分析（当 AI 没有输出心情标记时，用 AI 分析用户消息的语境情感）
+// 返回 { emotion, moodChange }，分析失败返回 null
+async function analyzeSentiment(message: string): Promise<{ emotion: string; moodChange: number } | null> {
+  if (!DEEPSEEK_API_KEY) return null;
 
-  // 解析心情标记 <|mood:XX|>
-  const moodMatch = rest.match(/^<\|mood:(\d{1,3})\|>/);
-  if (moodMatch) {
-    mood = parseInt(moodMatch[1], 10);
-    rest = rest.slice(moodMatch[0].length);
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    const response = await fetch(DEEPSEEK_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        messages: [
+          {
+            role: "system",
+            content: `你是一个情感分析助手。分析用户发给AI女友的消息的情感倾向和情绪。
+只回复JSON格式，不要其他任何内容：
+{"sentiment":"正面|负面|中性","emotion":"开心|生气|难过|平静","moodChange":整数}
+
+规则：
+- 负面消息（骂人、嫌弃、冷落、说坏话、凶、讽刺、不耐烦、阴阳怪气）：moodChange为负数，越负面绝对值越大（-3到-10）
+- 正面消息（夸奖、关心、哄、道歉、甜言蜜语、温柔）：moodChange为正数（3到8）
+- 中性消息（正常闲聊、问问题、讨论事情）：moodChange为0或±1
+- 必须理解语境和语气，不要只看字面词语。例如：
+  "去你的吧谁在乎你了" → 负面/生气，moodChange约-5
+  "你今天怎么这么安静" → 中性/平静，moodChange约0
+  "好啦好啦是我不好" → 正面/开心(被哄)，moodChange约+4`,
+          },
+          {
+            role: "user",
+            content: `分析这条消息的情感："${message}"`,
+          },
+        ],
+        stream: false,
+        max_tokens: 100,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) return null;
+
+    // 提取 JSON
+    const match = content.match(/\{[^}]+\}/);
+    if (!match) return null;
+
+    const result = JSON.parse(match[0]);
+    const moodChange = parseInt(result.moodChange, 10);
+    if (isNaN(moodChange)) return null;
+
+    return {
+      emotion: result.emotion || "平静",
+      moodChange: Math.max(-10, Math.min(10, moodChange)),
+    };
+  } catch (e) {
+    console.error("[sentiment] AI情感分析失败:", e);
+    return null;
   }
+}
 
-  // 解析情绪标记 <|emotion:XX|>
-  const emotionMatch = rest.match(/^<\|emotion:(\S+?)\|>/);
-  if (emotionMatch) {
-    emotion = emotionMatch[1];
-    rest = rest.slice(emotionMatch[0].length);
+// 异步生成对话摘要：把旧消息压缩成摘要，保留长期记忆
+async function generateSummaryIfNeeded(characterId: string): Promise<void> {
+  if (!DEEPSEEK_API_KEY) return;
+  const convData = loadConversation(characterId);
+  if (convData.messages.length <= SUMMARY_TRIGGER) return;
+
+  // 需要摘要的消息：前 (length - CHAT_CONTEXT_LIMIT) 条
+  const toSummarize = convData.messages.slice(0, convData.messages.length - CHAT_CONTEXT_LIMIT);
+  if (toSummarize.length === 0) return;
+
+  // 构建摘要请求
+  const dialogText = toSummarize
+    .map((m) => `${m.role === "user" ? "用户" : "玉子"}: ${m.content.slice(0, 200)}`)
+    .join("\n");
+
+  const oldSummary = convData.summary || "";
+  const prompt = `请把以下对话记录压缩成一段简短的摘要（200字以内），保留关键信息：聊过什么话题、发生过什么重要的事、用户的喜好、约定、关系进展等。只保留重要信息，去掉闲聊细节。${oldSummary ? `\n\n之前的摘要：${oldSummary}` : ""}\n\n对话记录：\n${dialogText}`;
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+    const response = await fetch(DEEPSEEK_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        messages: [{ role: "user", content: prompt }],
+        stream: false,
+        max_tokens: 300,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+    if (!response.ok) return;
+
+    const data = await response.json();
+    const newSummary = data.choices?.[0]?.message?.content;
+    if (!newSummary) return;
+
+    // 删除已摘要的消息，保留最近 CHAT_CONTEXT_LIMIT 条
+    convData.messages = convData.messages.slice(toSummarize.length);
+    convData.summary = newSummary;
+    convData.summaryUpTo = (convData.summaryUpTo || 0) + toSummarize.length;
+
+    saveConversation(characterId, convData);
+    console.log(`[summary] 已生成摘要: ${toSummarize.length}条消息压缩为${newSummary.length}字，剩余${convData.messages.length}条`);
+  } catch (e) {
+    console.error("[summary] 摘要生成失败:", e);
   }
-
-  return { mood, emotion, rest };
 }
 
 function needsMoreBuffer(buffer: string): boolean {
-  if (!buffer.startsWith("<")) return false;
+  const trimmed = buffer.trimStart();
+  if (!trimmed.startsWith("<")) return false;
 
-  const firstClose = buffer.indexOf("|>");
+  const firstClose = trimmed.indexOf("|>");
   if (firstClose === -1) return true; // 第一个标记还没结束
 
   // 第一个标记完整，检查后面是否可能是第二个标记
-  const afterFirst = buffer.slice(firstClose + 2);
+  const afterFirst = trimmed.slice(firstClose + 2);
   if (afterFirst.startsWith("<")) {
     return afterFirst.indexOf("|>") === -1; // 第二个标记还没结束
   }
@@ -387,7 +499,8 @@ app.post("/api/chat", async (req, res) => {
 
   const messages: ChatMessage[] = [
     { role: "system", content: systemPrompt },
-    ...convData.messages,
+    ...(convData.summary ? [{ role: "system" as const, content: `【之前的对话记忆】\n${convData.summary}` }] : []),
+    ...convData.messages.slice(-CHAT_CONTEXT_LIMIT),
     { role: "user", content: message },
   ];
 
@@ -415,7 +528,7 @@ app.post("/api/chat", async (req, res) => {
       (text) => sseSend(res, { type: "text", text }),
       (mood) => {
         // 限制心情变化幅度
-        const finalMood = mood !== null ? clampMoodChange(currentMood, mood, 5) : currentMood;
+        const finalMood = mood !== null ? clampMoodChange(currentMood, mood, 10) : currentMood;
         sseSend(res, { type: "mood", mood: finalMood });
       },
       (emotion) => {
@@ -425,9 +538,37 @@ app.post("/api/chat", async (req, res) => {
     );
 
     const reply = fullReply.trim() || "（她好像走神了，再说一次试试～）";
-    const finalMood = rawMood !== null ? clampMoodChange(currentMood, rawMood, 5) : currentMood;
+    let finalMood = rawMood !== null ? clampMoodChange(currentMood, rawMood, 10) : currentMood;
+    let effectiveEmotion = emotion;
 
-    console.log(`[chat] 完成: mood=${currentMood}→${finalMood}, emotion=${emotion || "无"}, reply="${reply.slice(0, 50)}"`);
+    // AI 没有输出心情标记时，用 AI 情感分析用户消息的语境
+    if (rawMood === null && !emotion) {
+      const sentiment = await analyzeSentiment(message);
+      if (sentiment) {
+        effectiveEmotion = sentiment.emotion;
+        finalMood = clampNum(currentMood + sentiment.moodChange, 0, 100);
+        console.log(`[chat] AI情感分析: emotion=${effectiveEmotion}, moodChange=${sentiment.moodChange} (message="${message.slice(0, 20)}")`);
+        if (!clientClosed) {
+          sseSend(res, { type: "mood", mood: finalMood });
+          sseSend(res, { type: "emotion", emotion: effectiveEmotion });
+        }
+      }
+    }
+    // 保底机制：AI 输出了情绪标记但心情没有明显变化时，强制变化
+    else if ((effectiveEmotion === "生气" || effectiveEmotion === "难过") && finalMood >= currentMood - 2) {
+      const forcedDecrease = 3 + Math.floor(Math.random() * 3); // 3-5
+      finalMood = clampNum(currentMood - forcedDecrease, 0, 100);
+      console.log(`[chat] 保底心情下降 ${forcedDecrease} (emotion=${effectiveEmotion}, rawMood=${rawMood}, currentMood=${currentMood})`);
+      if (!clientClosed) sseSend(res, { type: "mood", mood: finalMood });
+    }
+    else if ((effectiveEmotion === "开心" || effectiveEmotion === "撒娇") && finalMood <= currentMood + 2) {
+      const forcedIncrease = 2 + Math.floor(Math.random() * 3); // 2-4
+      finalMood = clampNum(currentMood + forcedIncrease, 0, 100);
+      console.log(`[chat] 保底心情上升 ${forcedIncrease} (emotion=${effectiveEmotion}, rawMood=${rawMood}, currentMood=${currentMood})`);
+      if (!clientClosed) sseSend(res, { type: "mood", mood: finalMood });
+    }
+
+    console.log(`[chat] 完成: mood=${currentMood}→${finalMood}(raw=${rawMood}), emotion=${effectiveEmotion || "无"}, reply="${reply.slice(0, 50)}"`);
 
     // 保存对话历史
     convData.messages.push({ role: "user", content: message });
@@ -439,9 +580,36 @@ app.post("/api/chat", async (req, res) => {
     convData.lastMood = finalMood;
     convData.lastActiveTime = new Date().toISOString();
     saveConversation(characterId, convData);
+    backupConversation(characterId);
+
+    // 异步生成摘要（不阻塞响应）
+    generateSummaryIfNeeded(characterId).catch((e) =>
+      console.error("[summary] 摘要生成失败:", e)
+    );
 
     // 更新角色心情
     updateMoodWithHistory(characterId, finalMood);
+
+    // 心情变化联动亲密度：被说坏话心情下降时亲密度也下降
+    const moodDiff = finalMood - currentMood;
+    if (moodDiff < -3) {
+      // 心情明显下降，亲密度按约1/3比例下降（最多降5）
+      const intimacyLoss = Math.min(5, Math.max(1, Math.round(Math.abs(moodDiff) / 3)));
+      petState.intimacy = clampNum(petState.intimacy - intimacyLoss, 0, 100);
+      console.log(`[chat] 亲密度下降 ${intimacyLoss} (moodDiff=${moodDiff}), intimacy=${petState.intimacy}`);
+    } else if (moodDiff > 5) {
+      // 心情明显上升，亲密度微增（最多增3）
+      const intimacyGain = Math.min(3, Math.round(moodDiff / 5));
+      petState.intimacy = clampNum(petState.intimacy + intimacyGain, 0, 100);
+      // 开心能解乏：心情上升时疲劳度恢复 2-5
+      const fatigueRelief = Math.min(5, Math.max(2, Math.round(moodDiff / 3)));
+      petState.fatigue = clampNum(petState.fatigue - fatigueRelief, 0, 100);
+      console.log(`[chat] 亲密度上升 ${intimacyGain}, 疲劳度恢复 ${fatigueRelief} (moodDiff=${moodDiff}), intimacy=${petState.intimacy}, fatigue=${petState.fatigue}`);
+    }
+    // 重新检查成就（亲密度变化可能触发新成就）
+    const newAchFromIntimacy = updatePetStatsAndCheckAchievements(petState);
+    newAchievements.push(...newAchFromIntimacy);
+    savePetState(characterId, petState);
 
     if (!clientClosed) {
       // 发送宠物状态更新（前端用于刷新金币/饱腹感等）
@@ -483,70 +651,14 @@ app.post("/api/proactive", async (req, res) => {
   else if (hour < 22) timeOfDay = "现在是晚上";
   else timeOfDay = "现在是深夜";
 
-  // 随机选一个话题方向，避免每次主动消息重复
-  // 结合玉子人设（二次元宅女/插画师/养猫/追番/抽卡），让主动消息有"她"的味道
-  const proactiveTopics = [
-    // 关心类
-    "关心对方在做什么，语气自然不要太刻意",
-    "问对方今天开不开心，有没有什么好玩的事",
-    "问对方吃饭了没，像随手一发的那种",
-    "提醒对方天气变化，比如降温加衣服、下雨带伞",
-
-    // 想念/暧昧类（暧昧期人设，不好意思直说）
-    "想说想对方了但又不好意思直说，绕个弯子表达",
-    "抱怨对方怎么不来找你，带点小撒娇",
-    "突然想听对方的声音，找个借口让他发语音或打电话",
-    "看到什么东西让你想起对方，顺嘴提一下",
-    "试探性地问对方在干嘛，是不是在忙",
-
-    // 团子（橘猫）相关
-    "吐槽团子刚才的捣乱行为，比如踩键盘、扒拉东西、叼走数位笔",
-    "分享团子的可爱瞬间，比如睡相、表情、傻乎乎的样子",
-    "说团子又在盯着空气看，不知道在干嘛，有点渗人",
-
-    // 画画/工作相关
-    "抱怨画到一半卡住了好烦，想找人说说话转移注意力",
-    "分享刚交完稿的轻松感，终于解放了想庆祝一下",
-    "吐槽甲方又改需求了，想打人",
-    "说突然有灵感想画点什么，但不知道画啥，问他有没有想法",
-    "说在给对方偷偷画一张画，不让他看",
-
-    // 二次元相关
-    "激动地分享刚更新的番太好看了，想安利给他",
-    "吐槽某部番的剧情走向，比如角色死了、烂尾了、BE了",
-    "说又氪金抽卡了，非到想哭或者欧到炫耀",
-    "提到原神或星铁的新活动，问他玩不玩",
-    "安利对方一首最近单曲循环的歌",
-
-    // 生活琐事
-    "说又熬夜了，天亮才发现，后悔但又忍不住",
-    "说点了奶茶或外卖，问他要不要",
-    "说被窝太暖不想起来，撒娇让他帮忙拿东西",
-    "说下雨了好适合窝着不出门",
-    "说刚才做了个奇怪的梦，讲给他听",
-    "路过某家店想起之前的事，顺嘴提一句",
-
-    // 共同记忆类（呼应角色档案里的记忆点）
-    "提起之前约好看海的事，问他什么时候去",
-    "说漫展快到了，想拉他一起去，顺便cos",
-    "回忆两人之前聊过的某个话题，突然又想到了",
-    "提到他一直用的那个头像（你画的），心里有点小得意",
-
-    // 随机互动
-    "突然问对方一个莫名其妙的小问题",
-    "说一个小愿望，比如想去某地、想买某物、想吃某样东西",
-    "想跟对方一起做某件事，比如一起看番、一起打游戏、一起点外卖",
-    "分享刚才脑子里冒出来的一句莫名其妙的话",
-  ];
-  const topic = proactiveTopics[Math.floor(Math.random() * proactiveTopics.length)];
-
-  // 主动消息的系统 prompt
+  // 主动消息的系统 prompt（去掉预设话题模板，让 AI 根据心情和上下文自由发挥）
   const systemPrompt = buildPersona(characterToPersona(character), currentMood, petState) +
-    `\n\n现在是你主动找用户说话。${timeOfDay}，用户已经有一段时间没来找你了。\n你突然想聊的方向是：${topic}。\n要求：\n- 只发一条，简短自然，像微信突然弹出来的消息\n- 要符合你的性格和说话方式，带你的口头禅和语气，不要像在执行任务\n- 可以结合当前心情、时间、团子的状态自然发挥\n- 不要重复之前主动消息说过的内容，每次用不同的话题或表达方式`;
+    `\n\n现在是你主动找用户说话。${timeOfDay}，用户已经有一段时间没来找你了。\n重要前提：用户当前没有给你发消息，是你主动找用户说话，不是在回复用户。你是在自言自语、突然想找用户聊天，就像微信里主动发一条消息过去。\n要求：\n- 只发一条，简短自然，像微信突然弹出来的消息，不要像在执行任务\n- 严禁回复式表述：不要说"看到你的消息""收到你的消息""你刚说...""你跟我说...""嗯嗯我知道了""刚才你说"等任何暗示用户刚发消息或你在回复的措辞\n- 根据你当前的心情决定说什么：心情好就分享开心的事或主动撒娇，心情不好就抱怨或求关注，平静就随口聊日常\n- 话题自由发挥：可以聊你正在做的事（画画/追番/打游戏）、煤球、刚想到的事、对用户的想念、生活琐事等，不要每次都聊同一件事\n- 严禁捏造没有发生过的事：不要说"昨天我们..."如果对话记录里没有这件事；不要把想象的事当成回忆\n- 不要重复最近聊过的话题：仔细看下面的对话记录，避免聊刚刚才说过的内容\n- 要符合你的性格和说话方式，带你的口头禅和语气，QQ/微信聊天风格`;
 
   const messages: ChatMessage[] = [
     { role: "system", content: systemPrompt },
-    ...convData.messages.slice(-6), // 最近几条作为上下文
+    ...(convData.summary ? [{ role: "system" as const, content: `【之前的对话记忆】\n${convData.summary}` }] : []),
+    ...convData.messages.slice(-CHAT_CONTEXT_LIMIT),
   ];
 
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
@@ -569,7 +681,7 @@ app.post("/api/proactive", async (req, res) => {
       messages,
       (text) => sseSend(res, { type: "text", text }),
       (mood) => {
-        const finalMood = mood !== null ? clampMoodChange(currentMood, mood, 5) : currentMood;
+        const finalMood = mood !== null ? clampMoodChange(currentMood, mood, 10) : currentMood;
         sseSend(res, { type: "mood", mood: finalMood });
       },
       (emotion) => {
@@ -580,12 +692,16 @@ app.post("/api/proactive", async (req, res) => {
 
     const reply = fullReply.trim();
     if (reply) {
-      const finalMood = rawMood !== null ? clampMoodChange(currentMood, rawMood, 5) : currentMood;
+      const finalMood = rawMood !== null ? clampMoodChange(currentMood, rawMood, 10) : currentMood;
       convData.messages.push({ role: "assistant", content: reply });
       while (convData.messages.length > MAX_HISTORY_ROUNDS * 2) convData.messages.shift();
       convData.lastMood = finalMood;
       convData.lastActiveTime = new Date().toISOString();
       saveConversation(characterId, convData);
+      backupConversation(characterId);
+      generateSummaryIfNeeded(characterId).catch((e) =>
+        console.error("[summary] 主动消息摘要生成失败:", e)
+      );
       updateMoodWithHistory(characterId, finalMood);
     }
 
@@ -658,14 +774,11 @@ app.get("/api/achievements", (req, res) => {
 });
 
 // ========== AI 日记系统 ==========
-// 非流式调用 DeepSeek 生成日记
+// 非流式调用 DeepSeek 生成日记（一天一条，后续追加段落）
 async function generateDiary(characterId: string): Promise<DiaryEntry | null> {
   if (!DEEPSEEK_API_KEY) return null;
   const character = getCharacter(characterId);
   if (!character) return null;
-
-  // 今天已有日记则不重复生成
-  if (hasTodayDiary(characterId)) return null;
 
   // 读取最近对话（取最近 20 条）
   const convData = loadConversation(characterId);
@@ -681,21 +794,54 @@ async function generateDiary(characterId: string): Promise<DiaryEntry | null> {
   const now = new Date();
   const timeStr = `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`;
 
-  const systemPrompt = `你是${character.name}，正在写自己的私人日记。请根据今天和用户的互动记录，以第一人称写一段简短的日记（150-300字）。
+  // 检查今天是否已有日记（有则追加，无则新建）
+  const entries = loadDiary(characterId);
+  const todayEntry = entries.find((e) => e.date === today);
+  const isAppend = !!todayEntry;
+
+  let systemPrompt: string;
+  let userPrompt: string;
+
+  if (isAppend && todayEntry) {
+    // 追加模式：只写新段落，避免重复已写内容
+    systemPrompt = `你是${character.name}，正在写自己的私人日记。今天你已经在日记本上写了一些内容，现在根据之后发生的新互动，追加一段新的日记。
+要求：
+1. 以第一人称"我"来写，语气符合你的性格
+2. 只写新发生的事和感受，不要重复已经写过的内容
+3. 自然口语化，像真的在写日记
+4. 不要出现 <|mood:xx|> <|emotion:xx|> 这样的标记
+5. 只写一段（50-150字），不要写太长
+当前心情：${moodLevel.label}（${character.mood}/100）`;
+
+    userPrompt = `今天是${today}，现在${timeStr}。
+你已经写下的日记：
+---
+${todayEntry.content}
+---
+
+以下是最近和用户的互动记录：
+${recentMessages || "（最近没有新互动记录）"}
+
+请追加一段新的日记（只写新内容，开头加上当前时间标记【${timeStr}】）：`;
+  } else {
+    // 新建模式：首篇日记
+    systemPrompt = `你是${character.name}，正在写自己的私人日记。请根据今天和用户的互动记录，以第一人称写一段简短的日记（150-300字）。
 要求：
 1. 以第一人称"我"来写，语气符合你的性格
 2. 记录今天发生的事、和用户的互动、你的心情感受
 3. 自然口语化，像真的在写日记，不要客套
 4. 不要出现 <|mood:xx|> <|emotion:xx|> 这样的标记
 5. 结尾可以有一句对明天的期待或小感慨
+6. 开头加上当前时间标记【${timeStr}】
 当前心情：${moodLevel.label}（${character.mood}/100）
 当前状态：饱腹感${petState.hunger}、疲劳度${petState.fatigue}、亲密度${petState.intimacy}`;
 
-  const userPrompt = `今天是${today}，现在${timeStr}。
+    userPrompt = `今天是${today}，现在${timeStr}。
 以下是今天和用户的互动记录（如果没有记录，就写今天还没怎么和用户说话的感受）：
 ${recentMessages || "（今天还没有互动记录）"}
 
 请写下今天的日记：`;
+  }
 
   try {
     const controller = new AbortController();
@@ -728,24 +874,45 @@ ${recentMessages || "（今天还没有互动记录）"}
     const content = data.choices?.[0]?.message?.content;
     if (!content || typeof content !== "string") return null;
 
-    const entry: DiaryEntry = {
-      date: today,
-      content: content.trim(),
-      mood: character.mood,
-      createdAt: new Date().toISOString(),
-    };
+    if (isAppend && todayEntry) {
+      // 追加到已有 entry：在末尾拼接新段落
+      const newContent = todayEntry.content.trimEnd() + "\n\n" + content.trim();
+      const updatedEntry: DiaryEntry = {
+        ...todayEntry,
+        content: newContent,
+        mood: character.mood, // 更新为最新心情
+        createdAt: new Date().toISOString(),
+      };
+      const updatedEntries = entries.map((e) =>
+        e.date === today ? updatedEntry : e
+      );
+      // 保留 90 天
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - 90);
+      const cutoffStr = cutoff.toISOString().slice(0, 10);
+      const filtered = updatedEntries.filter((e) => e.date >= cutoffStr);
+      saveDiary(characterId, filtered);
 
-    // 保存日记（最多保留 90 天）
-    const entries = loadDiary(characterId);
-    entries.push(entry);
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - 90);
-    const cutoffStr = cutoff.toISOString().slice(0, 10);
-    const filtered = entries.filter((e) => e.date >= cutoffStr);
-    saveDiary(characterId, filtered);
+      console.log(`[diary] ${characterId}: 追加日记 ${today} (+${content.length}字)`);
+      return updatedEntry;
+    } else {
+      // 新建 entry
+      const entry: DiaryEntry = {
+        date: today,
+        content: content.trim(),
+        mood: character.mood,
+        createdAt: new Date().toISOString(),
+      };
+      entries.push(entry);
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - 90);
+      const cutoffStr = cutoff.toISOString().slice(0, 10);
+      const filtered = entries.filter((e) => e.date >= cutoffStr);
+      saveDiary(characterId, filtered);
 
-    console.log(`[diary] ${characterId}: 生成日记 ${today} (${content.length}字)`);
-    return entry;
+      console.log(`[diary] ${characterId}: 生成日记 ${today} (${content.length}字)`);
+      return entry;
+    }
   } catch (e) {
     console.error("[diary] 生成失败:", e);
     return null;
@@ -760,23 +927,15 @@ app.get("/api/diary", (req, res) => {
   res.json({ ok: true, entries, hasToday: hasTodayDiary(characterId) });
 });
 
-// 生成今天的日记（每天首次打开时调用）
+// 生成/追加今天的日记（一天一条，后续调用追加段落）
 app.post("/api/diary/generate", async (req, res) => {
   const { characterId } = req.body as { characterId?: string };
   if (!characterId) return res.status(400).json({ error: "characterId 必填" });
-  // 今天已有日记，直接返回
-  if (hasTodayDiary(characterId)) {
-    const entries = loadDiary(characterId);
-    const today = new Date().toISOString().slice(0, 10);
-    const todayEntry = entries.find((e) => e.date === today);
-    return res.json({ ok: true, entry: todayEntry || null, alreadyExists: true });
-  }
-  // 生成新日记
   const entry = await generateDiary(characterId);
   if (!entry) {
     return res.json({ ok: false, error: "日记生成失败（可能缺少 API Key 或暂无对话记录）" });
   }
-  res.json({ ok: true, entry, alreadyExists: false });
+  res.json({ ok: true, entry });
 });
 
 // ========== 角色管理 API ==========
@@ -1421,28 +1580,29 @@ app.post("/api/pet/decay", (req, res) => {
   const petState = loadPetState(characterId);
   const now = Date.now();
   const last = petState.lastActiveTime ? new Date(petState.lastActiveTime).getTime() : now;
-  const hoursPassed = Math.max(0, (now - last) / (1000 * 60 * 60));
+  const minutesPassed = Math.max(0, (now - last) / (1000 * 60));
 
-  // 至少经过 1 小时才衰减
-  if (hoursPassed < 1) {
+  // 每 3 分钟为一档，至少经过 3 分钟才衰减
+  const ticks = Math.floor(minutesPassed / 3);
+  if (ticks < 1) {
     return res.json({ ok: true, petState, decayed: false });
   }
 
-  // 每小时：饱腹感 -3、疲劳度 -5（恢复）、亲密度 -1
-  const hungerLoss = Math.round(hoursPassed * 3);
-  const fatigueRecovery = Math.round(hoursPassed * 5);
-  const intimacyLoss = Math.round(hoursPassed * 1);
+  // 每档（3分钟）：饱腹感 -1、疲劳度 -1（恢复）、亲密度 -0.5
+  const hungerLoss = ticks * 1;
+  const fatigueRecovery = ticks * 1;
+  const intimacyLoss = Math.floor(ticks * 0.5);
 
   petState.hunger = clampNum(petState.hunger - hungerLoss, 0, 100);
   petState.fatigue = clampNum(petState.fatigue - fatigueRecovery, 0, 100);
   petState.intimacy = clampNum(petState.intimacy - intimacyLoss, 0, 100);
 
   // 衰减后更新 lastActiveTime 为当前时间（避免重复衰减）
-  savePetState(characterId, petState, false);
+  savePetState(characterId, petState, true);
 
-  console.log(`[pet-decay] ${characterId}: ${hoursPassed.toFixed(1)}h, hunger-${hungerLoss}, fatigue-${fatigueRecovery}, intimacy-${intimacyLoss}`);
+  console.log(`[pet-decay] ${characterId}: ${minutesPassed.toFixed(0)}min(${ticks}档), hunger-${hungerLoss}, fatigue-${fatigueRecovery}, intimacy-${intimacyLoss}`);
 
-  res.json({ ok: true, petState, decayed: true, hoursPassed: Math.round(hoursPassed) });
+  res.json({ ok: true, petState, decayed: true, minutesPassed: Math.round(minutesPassed) });
 });
 
 // 桌宠操作触发 AI 回复（不保存 user 消息，只保存 AI 回复）
@@ -1494,7 +1654,7 @@ app.post("/api/pet/ai-reply", async (req, res) => {
       messages,
       (text) => sseSend(res, { type: "text", text }),
       (mood) => {
-        const finalMood = mood !== null ? clampMoodChange(currentMood, mood, 5) : currentMood;
+        const finalMood = mood !== null ? clampMoodChange(currentMood, mood, 10) : currentMood;
         sseSend(res, { type: "mood", mood: finalMood });
       },
       (emotion) => {
@@ -1505,7 +1665,7 @@ app.post("/api/pet/ai-reply", async (req, res) => {
 
     const reply = fullReply.trim();
     if (reply) {
-      const finalMood = rawMood !== null ? clampMoodChange(currentMood, rawMood, 5) : currentMood;
+      const finalMood = rawMood !== null ? clampMoodChange(currentMood, rawMood, 10) : currentMood;
       // 只保存 AI 回复，不保存 user 消息
       convData.messages.push({ role: "assistant", content: reply });
       while (convData.messages.length > MAX_HISTORY_ROUNDS * 2) convData.messages.shift();

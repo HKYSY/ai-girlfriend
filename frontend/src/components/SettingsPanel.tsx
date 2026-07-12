@@ -18,10 +18,6 @@ const DEFAULT_MODEL_URL = "/live2d/icegirl/IceGirl.model3.json";
 
 const TEMPLATE_OPTIONS = [
   { label: "玉子（推荐）", value: "yuko" },
-  { label: "温柔", value: "gentle" },
-  { label: "活泼", value: "lively" },
-  { label: "傲娇", value: "tsundere" },
-  { label: "知性", value: "intellectual" },
   { label: "自定义", value: "custom" },
 ];
 

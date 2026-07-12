@@ -715,12 +715,12 @@ body::after {
   padding: 18px;
   box-shadow: 0 8px 40px rgba(233, 30, 99, 0.25);
   border: 1px solid rgba(255, 255, 255, 0.6);
-  width: 280px;
+  width: 340px;
   max-height: 82vh;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   animation: interactPop 0.25s ease;
 }
 
@@ -966,6 +966,204 @@ body::after {
 
 .interact-switch.on .interact-switch-knob {
   transform: translateX(18px);
+}
+
+/* ========== 双Tab主切换（互动/设置） ========== */
+.interact-main-tabs {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+}
+
+.interact-main-tab {
+  flex: 1;
+  padding: 6px 10px;
+  border: 1px solid rgba(233, 30, 99, 0.12);
+  background: rgba(255, 255, 255, 0.5);
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  color: #888;
+  transition: all 0.2s;
+  text-align: center;
+}
+
+.interact-main-tab:hover {
+  background: rgba(233, 30, 99, 0.08);
+  color: #c2185b;
+}
+
+.interact-main-tab.active {
+  background: linear-gradient(135deg, #f06292, #e91e63);
+  border-color: #e91e63;
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(233, 30, 99, 0.25);
+}
+
+/* 设置栏容器 */
+.interact-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ========== 互动栏内部容器（InteractPanel） ========== */
+.interact-panel-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+}
+
+/* v2 面板：禁止选中文本 + 自适应高度 */
+.interact-panel.interact-panel-v2 {
+  user-select: none;
+  max-height: 90vh;
+  overflow: hidden;
+}
+
+.interact-panel.interact-panel-v2 .interact-settings {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+/* 右下角缩放手柄 */
+.interact-resize-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 50%, rgba(233, 30, 99, 0.3) 50%, rgba(233, 30, 99, 0.4) 60%, transparent 60%, transparent 75%, rgba(233, 30, 99, 0.3) 75%, rgba(233, 30, 99, 0.4) 85%, transparent 85%);
+  border-bottom-right-radius: 16px;
+  z-index: 10;
+}
+
+.interact-resize-handle:hover {
+  background: linear-gradient(135deg, transparent 50%, rgba(233, 30, 99, 0.5) 50%, rgba(233, 30, 99, 0.6) 60%, transparent 60%, transparent 75%, rgba(233, 30, 99, 0.5) 75%, rgba(233, 30, 99, 0.6) 85%, transparent 85%);
+}
+
+.interact-coins-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: linear-gradient(135deg, rgba(255, 213, 79, 0.15), rgba(255, 152, 0, 0.08));
+  border-radius: 10px;
+}
+
+.interact-coins {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.interact-coins .coin-value {
+  font-size: 16px;
+  font-weight: 700;
+  color: #f57c00;
+}
+
+.interact-body {
+  display: flex;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+}
+
+/* 左侧图标导航列 */
+.interact-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.interact-nav-btn {
+  width: 38px;
+  height: 38px;
+  border: 1px solid rgba(233, 30, 99, 0.1);
+  background: rgba(255, 255, 255, 0.6);
+  border-radius: 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #888;
+  transition: all 0.2s;
+}
+
+.interact-nav-btn:hover {
+  background: rgba(233, 30, 99, 0.08);
+  color: #c2185b;
+}
+
+.interact-nav-btn.active {
+  background: linear-gradient(135deg, rgba(240, 98, 146, 0.2), rgba(236, 64, 122, 0.15));
+  border-color: #e91e63;
+  color: #c2185b;
+  box-shadow: 0 2px 8px rgba(233, 30, 99, 0.12);
+}
+
+/* 右侧内容区 */
+.interact-content {
+  flex: 1;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.interact-content::-webkit-scrollbar {
+  width: 4px;
+}
+.interact-content::-webkit-scrollbar-thumb {
+  background: rgba(233, 30, 99, 0.2);
+  border-radius: 2px;
+}
+
+/* 互动栏内 section */
+.interact-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.interact-status-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.interact-status-item {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 列表项（商店/约会） */
+.interact-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.interact-list-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(233, 30, 99, 0.08);
+  border-radius: 10px;
+  transition: all 0.2s;
+}
+
+.interact-list-item:hover {
+  background: rgba(233, 30, 99, 0.06);
+  border-color: rgba(233, 30, 99, 0.2);
 }
 
 /* ========== 设置面板（毛玻璃弹窗） ========== */

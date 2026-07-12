@@ -482,7 +482,7 @@ export async function petDecay(characterId: string): Promise<{
   ok: boolean;
   petState: PetState;
   decayed: boolean;
-  hoursPassed?: number;
+  minutesPassed?: number;
 }> {
   const res = await fetch("/api/pet/decay", {
     method: "POST",

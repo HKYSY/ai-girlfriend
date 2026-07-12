@@ -4,7 +4,6 @@ import ChatWindow, { type Message } from "./components/ChatWindow";
 import ChatInput from "./components/ChatInput";
 import Live2DCanvas from "./components/Live2DCanvas";
 import SettingsPanel from "./components/SettingsPanel";
-import Sidebar from "./components/Sidebar";
 import {
   streamChat,
   streamProactive,
@@ -14,12 +13,12 @@ import {
   getCharacters,
   getCharacterDetail,
   createCharacter,
-  updateCharacter,
   deleteCharacter,
   clearConversation,
   generateDiary,
 } from "./api";
 import type { Character, PetState } from "./api";
+import { moodToEmoji } from "./utils";
 
 // 默认分栏比例（Live2D 占比）
 const DEFAULT_SPLIT_RATIO = 0.55;
@@ -37,15 +36,7 @@ function loadSplitRatio(): number {
   return DEFAULT_SPLIT_RATIO;
 }
 
-// 心情值 → emoji
-function moodToEmoji(mood: number): string {
-  if (mood >= 90) return "😍";
-  if (mood >= 70) return "😊";
-  if (mood >= 50) return "🙂";
-  if (mood >= 30) return "😟";
-  if (mood >= 10) return "😢";
-  return "😭";
-}
+// 心情值 → emoji（已提取到 utils.ts）
 
 export default function App() {
   // ========== 角色列表与当前角色 ==========
@@ -63,6 +54,8 @@ export default function App() {
 
   // ========== UI 状态 ==========
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // 强制关闭 Live2D 互动浮层的信号（每次打开设置时递增）
+  const [closeSignal, setCloseSignal] = useState(0);
   const [splitRatio, setSplitRatio] = useState(loadSplitRatio);
   // 主动消息开关（关机按钮）：false 时 AI 不会自动发消息
   const [proactiveEnabled, setProactiveEnabled] = useState(() => {
@@ -171,7 +164,18 @@ export default function App() {
 
     // 心情衰减定时器（同时触发桌宠状态衰减：饱腹感下降、疲劳度恢复、亲密度微降）
     const decayTimer = window.setInterval(() => {
-      if (proactiveActiveRef.current && currentCharacter && !loading) {
+      if (!currentCharacter) return;
+      // 桌宠状态衰减（饱腹感下降、疲劳度恢复）—— 始终执行，不受主动消息状态影响
+      petDecay(currentCharacter.id)
+        .then((data) => {
+          if (data.decayed) {
+            setPetState(data.petState);
+            console.log(`[pet-decay] ${data.minutesPassed}min 已衰减`);
+          }
+        })
+        .catch((e) => console.error("[pet-decay] 失败:", e));
+      // 心情衰减 —— 仅在用户长时间不回复（主动消息等待中）时触发
+      if (proactiveActiveRef.current && !loading) {
         moodDecay(currentCharacter.id)
           .then((data) => {
             setMood(data.mood);
@@ -187,15 +191,6 @@ export default function App() {
             console.log(`[mood-decay] ${data.mood} (${data.level})`);
           })
           .catch((e) => console.error("[mood-decay] 失败:", e));
-        // 桌宠状态衰减（后端至少 1 小时才真正衰减，否则 no-op）
-        petDecay(currentCharacter.id)
-          .then((data) => {
-            if (data.decayed) {
-              setPetState(data.petState);
-              console.log(`[pet-decay] ${data.hoursPassed}h 已衰减`);
-            }
-          })
-          .catch((e) => console.error("[pet-decay] 失败:", e));
       }
     }, MOOD_DECAY_INTERVAL);
 
@@ -328,28 +323,12 @@ export default function App() {
     }
   };
 
-  // ========== Live2D 位置持久化（防抖保存）==========
-  const positionSaveTimerRef = useRef<number | null>(null);
+  // ========== Live2D 位置（每次打开/刷新回到默认位置，不持久化）==========
   const handlePositionChange = useCallback(
-    (pos: { x: number; y: number; scale: number }) => {
-      if (!currentCharacter) return;
-      // 立即更新本地状态
-      setCurrentCharacter((prev) =>
-        prev ? { ...prev, live2dPosition: pos } : prev
-      );
-      // 防抖保存到后端
-      if (positionSaveTimerRef.current) {
-        clearTimeout(positionSaveTimerRef.current);
-      }
-      positionSaveTimerRef.current = window.setTimeout(() => {
-        if (currentCharacter) {
-          updateCharacter(currentCharacter.id, { live2dPosition: pos }).catch(
-            (e) => console.error("[position] 保存失败:", e)
-          );
-        }
-      }, 500);
+    (_pos: { x: number; y: number; scale: number }) => {
+      // 仅会话内保持（Live2DCanvas 内部 model ref 直接操作），不保存到后端
     },
-    [currentCharacter]
+    []
   );
 
   // ========== 角色更新回调（SettingsPanel 保存后）==========
@@ -564,18 +543,6 @@ export default function App() {
 
   return (
     <div className="app" ref={containerRef}>
-      {/* 最左侧：桌宠侧边栏 */}
-      {currentCharacter && (
-        <Sidebar
-          characterId={currentCharacter.id}
-          petState={petState}
-          mood={mood}
-          onPetStateChange={setPetState}
-          onAIContext={handlePetAIContext}
-          onBubble={triggerBubble}
-        />
-      )}
-
       {/* 左侧：Live2D 立绘区 */}
       <div className="stage" style={{ flex: splitRatio }}>
         {/* 立绘顶部栏：角色选择器 */}
@@ -642,9 +609,15 @@ export default function App() {
               modelUrl={currentCharacter.modelUrl}
               mood={mood}
               emotion={emotion}
-              position={currentCharacter.live2dPosition}
+              position={{ x: 0, y: 0, scale: 1 }}
               onPositionChange={handlePositionChange}
               bubbleText={bubbleText}
+              characterId={currentCharacter.id}
+              petState={petState}
+              onPetStateChange={setPetState}
+              onAIContext={handlePetAIContext}
+              onBubble={triggerBubble}
+              closeSignal={closeSignal}
             />
           )}
         </div>
@@ -696,7 +669,10 @@ export default function App() {
             </button>
             <button
               className="settings-trigger"
-              onClick={() => setSettingsOpen(true)}
+              onClick={() => {
+                setCloseSignal((n) => n + 1);
+                setSettingsOpen(true);
+              }}
               title="设置"
             >
               ⚙

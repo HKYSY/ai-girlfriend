@@ -31,6 +31,8 @@ export interface ConversationData {
   messages: { role: string; content: string }[];
   lastMood: number;
   lastActiveTime: string; // ISO 时间戳
+  summary?: string;        // 旧消息的摘要（长期记忆）
+  summaryUpTo?: number;    // 摘要已覆盖的消息条数
 }
 
 // ========== 默认 Live2D 位置 ==========
@@ -108,4 +110,40 @@ export function clearConversation(characterId: string): void {
 // 生成唯一 ID
 export function generateId(): string {
   return `char-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+// ========== 对话备份 ==========
+const BACKUP_DIR = path.join(DATA_DIR, "backup");
+const MAX_BACKUPS = 50; // 每个角色最多保留50份备份
+
+fs.mkdirSync(BACKUP_DIR, { recursive: true });
+
+export function backupConversation(characterId: string): void {
+  const srcFile = path.join(CONVERSATIONS_DIR, `${characterId}.json`);
+  if (!fs.existsSync(srcFile)) return;
+
+  const now = new Date();
+  const ts = now.toISOString().replace(/[-:T]/g, "").slice(0, 14);
+  const backupFile = path.join(BACKUP_DIR, `${characterId}_${ts}.json`);
+
+  try {
+    const data = fs.readFileSync(srcFile, "utf-8");
+    fs.writeFileSync(backupFile, data, "utf-8");
+
+    // 清理旧备份：只保留最近 MAX_BACKUPS 份
+    const prefix = `${characterId}_`;
+    const backups = fs
+      .readdirSync(BACKUP_DIR)
+      .filter((f) => f.startsWith(prefix) && f.endsWith(".json"))
+      .sort();
+
+    if (backups.length > MAX_BACKUPS) {
+      const toDelete = backups.slice(0, backups.length - MAX_BACKUPS);
+      for (const f of toDelete) {
+        fs.unlinkSync(path.join(BACKUP_DIR, f));
+      }
+    }
+  } catch (e) {
+    console.error("[backup] 备份失败:", e);
+  }
 }

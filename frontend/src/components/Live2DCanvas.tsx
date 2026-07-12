@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
 import * as PIXI from "pixi.js";
 import { Live2DModel } from "@sekai-world/pixi-live2d-display-mulmotion";
+import InteractPanel from "./InteractPanel";
+import type { PetState } from "../api";
 
 interface Live2DCanvasProps {
   modelUrl: string;
@@ -10,6 +12,14 @@ interface Live2DCanvasProps {
   position: { x: number; y: number; scale: number };
   onPositionChange: (pos: { x: number; y: number; scale: number }) => void;
   bubbleText?: { id: number; text: string } | null; // 外部触发的气泡文字
+  // 互动栏所需数据
+  characterId: string;
+  petState: PetState | null;
+  onPetStateChange: (state: PetState) => void;
+  onAIContext: (context: string) => void;
+  onBubble: (text: string) => void;
+  // 外部强制关闭浮层信号（每次递增触发关闭）
+  closeSignal?: number;
 }
 
 // 心情值 → 候选表情名映射（按优先级排列，兼容不同模型）
@@ -85,6 +95,12 @@ export default function Live2DCanvas({
   position,
   onPositionChange,
   bubbleText,
+  characterId,
+  petState,
+  onPetStateChange,
+  onAIContext,
+  onBubble,
+  closeSignal,
 }: Live2DCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -115,8 +131,11 @@ export default function Live2DCanvas({
   const [activeMotion, setActiveMotion] = useState<string | null>(null);
   const [activeExpression, setActiveExpression] = useState<string | null>(null);
   const [showInteract, setShowInteract] = useState(false); // 互动浮层
+  const [activeMainTab, setActiveMainTab] = useState<"interact" | "settings">("interact"); // 主Tab：互动/设置
+  const [panelSize, setPanelSize] = useState<{ w: number; h: number }>({ w: 560, h: 640 }); // 面板尺寸（默认最大）
+  const resizeRef = useRef<{ startX: number; startY: number; startW: number; startH: number } | null>(null);
   const [scaleValue, setScaleValue] = useState(1); // 缩放滑块值（与 scaleMulRef 同步）
-  const [panelPos, setPanelPos] = useState<{ x: number; y: number }>({ x: -1, y: -1 }); // 浮层位置（-1 表示默认居中）
+  const [panelPos, setPanelPos] = useState<{ x: number; y: number } | null>(null); // 浮层位置（null 表示默认居中）
   const [eyeTracking, setEyeTracking] = useState(true); // 视线跟随鼠标开关
   const [bubble, setBubble] = useState<{ id: number; text: string } | null>(null); // 对话气泡
   const bubbleRef = useRef<HTMLDivElement>(null);
@@ -390,6 +409,16 @@ export default function Live2DCanvas({
     return () => window.removeEventListener("keydown", onKey);
   }, [showInteract]);
 
+  // 外部 closeSignal 递增时强制关闭浮层（例如点设置键时）
+  const closeSignalRef = useRef(closeSignal);
+  useEffect(() => {
+    if (closeSignal === undefined) return;
+    if (closeSignal !== closeSignalRef.current) {
+      closeSignalRef.current = closeSignal;
+      if (showInteract) setShowInteract(false);
+    }
+  }, [closeSignal, showInteract]);
+
   // 窗口 resize 时更新 PIXI canvas 尺寸
   useEffect(() => {
     const onResize = () => {
@@ -563,9 +592,11 @@ export default function Live2DCanvas({
 
   // 浮层拖动：鼠标按下 header 开始拖动（相对于视口）
   const handlePanelDragStart = (e: React.MouseEvent) => {
-    // 点击关闭按钮不触发拖动
+    // 点击关闭按钮或Tab按钮不触发拖动
     if ((e.target as HTMLElement).closest(".interact-close")) return;
-    const panel = (e.currentTarget as HTMLElement).parentElement as HTMLElement;
+    if ((e.target as HTMLElement).closest(".interact-main-tab")) return;
+    // 用 closest 查找浮层根节点，更可靠
+    const panel = (e.currentTarget as HTMLElement).closest(".interact-panel") as HTMLElement | null;
     if (!panel) return;
     const panelRect = panel.getBoundingClientRect();
     panelDragRef.current = {
@@ -574,20 +605,58 @@ export default function Live2DCanvas({
       origX: panelRect.left,
       origY: panelRect.top,
     };
+    // 全局锁定：防止文本选择/光标闪烁干扰拖动
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "move";
     e.preventDefault();
   };
 
-  // 浮层拖动：mousemove + mouseup
+  // 缩放手柄：鼠标按下开始缩放
+  const handleResizeStart = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    resizeRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      startW: panelSize.w,
+      startH: panelSize.h,
+    };
+    // 全局锁定：防止文本选择/光标闪烁干扰缩放
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "nwse-resize";
+  };
+
+  // 浮层拖动 + 缩放：mousemove + mouseup
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
+      // 拖动面板
       const d = panelDragRef.current;
-      if (!d) return;
-      const dx = e.clientX - d.startX;
-      const dy = e.clientY - d.startY;
-      setPanelPos({ x: d.origX + dx, y: d.origY + dy });
+      if (d) {
+        const dx = e.clientX - d.startX;
+        const dy = e.clientY - d.startY;
+        setPanelPos({ x: d.origX + dx, y: d.origY + dy });
+        return;
+      }
+      // 缩放面板
+      const r = resizeRef.current;
+      if (r) {
+        const dw = e.clientX - r.startX;
+        const dh = e.clientY - r.startY;
+        setPanelSize({
+          w: Math.max(280, Math.min(560, r.startW + dw)),
+          h: Math.max(320, Math.min(640, r.startH + dh)),
+        });
+      }
     };
     const onUp = () => {
+      const wasActive = panelDragRef.current || resizeRef.current;
       panelDragRef.current = null;
+      resizeRef.current = null;
+      // 恢复 body 样式
+      if (wasActive) {
+        document.body.style.userSelect = "";
+        document.body.style.cursor = "";
+      }
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -600,7 +669,7 @@ export default function Live2DCanvas({
   // 打开浮层时重置位置为默认居中
   useEffect(() => {
     if (showInteract) {
-      setPanelPos({ x: -1, y: -1 });
+      setPanelPos(null);
     }
   }, [showInteract]);
 
@@ -670,15 +739,29 @@ export default function Live2DCanvas({
       {/* 用 Portal 渲染到 body，使面板可跨越 Live2D 区域显示在聊天栏上面 */}
       {showInteract && createPortal(
         <div
-          className="interact-panel"
-          style={
-            panelPos.x >= 0
-              ? { left: panelPos.x, top: panelPos.y, transform: "none" }
-              : undefined
-          }
+          className="interact-panel interact-panel-v2"
+          style={{
+            width: panelSize.w,
+            height: panelSize.h,
+            ...(panelPos ? { left: panelPos.x, top: panelPos.y, transform: "none" } : {}),
+          }}
         >
+            {/* 头部：双Tab切换 + 关闭按钮（可拖动） */}
             <div className="interact-header" onMouseDown={handlePanelDragStart}>
-              <span className="interact-header-title">✨ 互动面板</span>
+              <div className="interact-main-tabs">
+                <button
+                  className={`interact-main-tab${activeMainTab === "interact" ? " active" : ""}`}
+                  onClick={() => setActiveMainTab("interact")}
+                >
+                  💞 互动
+                </button>
+                <button
+                  className={`interact-main-tab${activeMainTab === "settings" ? " active" : ""}`}
+                  onClick={() => setActiveMainTab("settings")}
+                >
+                  ⚙️ 设置
+                </button>
+              </div>
               <button
                 className="interact-close"
                 onClick={() => setShowInteract(false)}
@@ -688,122 +771,142 @@ export default function Live2DCanvas({
               </button>
             </div>
 
-            {/* 表情区 */}
-            {normalExpressions.length > 0 && (
-              <div className="interact-section">
-                <div className="interact-section-title">表情</div>
-                <div className="interact-btn-grid">
-                  {normalExpressions.map((name) => (
+            {/* 互动栏：状态/商店/约会/游戏/成就/日记 */}
+            {activeMainTab === "interact" && (
+              <InteractPanel
+                characterId={characterId}
+                petState={petState}
+                mood={mood}
+                onPetStateChange={onPetStateChange}
+                onAIContext={onAIContext}
+                onBubble={onBubble}
+              />
+            )}
+
+            {/* 设置栏：表情/装饰/动作/缩放/视线跟随 */}
+            {activeMainTab === "settings" && (
+              <div className="interact-settings">
+                {/* 表情区 */}
+                {normalExpressions.length > 0 && (
+                  <div className="interact-section">
+                    <div className="interact-section-title">表情</div>
+                    <div className="interact-btn-grid">
+                      {normalExpressions.map((name) => (
+                        <button
+                          key={name}
+                          className={`interact-btn${
+                            activeExpression === name ? " active" : ""
+                          }`}
+                          onClick={() => playExpression(name)}
+                          title={`表情: ${name}`}
+                        >
+                          {name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 装饰开关区（与表情区分开，蓝色主题） */}
+                {decorationExpressions.length > 0 && (
+                  <div className="interact-section">
+                    <div className="interact-section-title">装饰开关</div>
+                    <div className="interact-btn-grid">
+                      {decorationExpressions.map((name) => (
+                        <button
+                          key={name}
+                          className={`interact-toggle${
+                            activeExpression === name ? " active" : ""
+                          }`}
+                          onClick={() => toggleDecoration(name)}
+                          title={`装饰: ${name}（点击开/关）`}
+                        >
+                          {activeExpression === name ? "● " : "○ "}
+                          {name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 动作区 */}
+                {motionGroups.length > 0 && (
+                  <div className="interact-section">
+                    <div className="interact-section-title">动作</div>
+                    <div className="interact-btn-grid">
+                      {motionGroups.filter((g) => g !== "TapBody").map((group) => (
+                        <button
+                          key={group}
+                          className={`interact-btn${
+                            activeMotion === group ? " active" : ""
+                          }`}
+                          onClick={() => playMotion(group)}
+                          title={`动作: ${group}`}
+                        >
+                          {group}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 缩放区 */}
+                <div className="interact-section">
+                  <div className="interact-section-title">
+                    缩放 {Math.round(scaleValue * 100)}%
+                  </div>
+                  <div className="interact-scale">
                     <button
-                      key={name}
-                      className={`interact-btn${
-                        activeExpression === name ? " active" : ""
-                      }`}
-                      onClick={() => playExpression(name)}
-                      title={`表情: ${name}`}
+                      className="interact-scale-btn"
+                      onClick={() => applyScale(scaleMulRef.current - 0.1)}
+                      title="缩小"
                     >
-                      {name}
+                      −
                     </button>
-                  ))}
+                    <input
+                      type="range"
+                      min={MIN_SCALE}
+                      max={MAX_SCALE}
+                      step={0.05}
+                      value={scaleValue}
+                      onChange={(e) => applyScale(parseFloat(e.target.value))}
+                      className="interact-slider"
+                    />
+                    <button
+                      className="interact-scale-btn"
+                      onClick={() => applyScale(scaleMulRef.current + 0.1)}
+                      title="放大"
+                    >
+                      +
+                    </button>
+                  </div>
+                  <button
+                    className="interact-reset"
+                    onClick={resetPosition}
+                    title="复位位置与缩放"
+                  >
+                    ⟲ 复位
+                  </button>
+                </div>
+
+                {/* 视线跟随开关 */}
+                <div className="interact-section">
+                  <div className="interact-toggle-row">
+                    <span className="interact-section-title">视线跟随鼠标</span>
+                    <button
+                      className={`interact-switch${eyeTracking ? " on" : ""}`}
+                      onClick={() => setEyeTracking((v) => !v)}
+                      title={eyeTracking ? "点击关闭视线跟随" : "点击开启视线跟随"}
+                    >
+                      <span className="interact-switch-knob" />
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
 
-            {/* 装饰开关区（与表情区分开，蓝色主题） */}
-            {decorationExpressions.length > 0 && (
-              <div className="interact-section">
-                <div className="interact-section-title">装饰开关</div>
-                <div className="interact-btn-grid">
-                  {decorationExpressions.map((name) => (
-                    <button
-                      key={name}
-                      className={`interact-toggle${
-                        activeExpression === name ? " active" : ""
-                      }`}
-                      onClick={() => toggleDecoration(name)}
-                      title={`装饰: ${name}（点击开/关）`}
-                    >
-                      {activeExpression === name ? "● " : "○ "}
-                      {name}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* 动作区 */}
-            {motionGroups.length > 0 && (
-              <div className="interact-section">
-                <div className="interact-section-title">动作</div>
-                <div className="interact-btn-grid">
-                  {motionGroups.filter((g) => g !== "TapBody").map((group) => (
-                    <button
-                      key={group}
-                      className={`interact-btn${
-                        activeMotion === group ? " active" : ""
-                      }`}
-                      onClick={() => playMotion(group)}
-                      title={`动作: ${group}`}
-                    >
-                      {group}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* 缩放区 */}
-            <div className="interact-section">
-              <div className="interact-section-title">
-                缩放 {Math.round(scaleValue * 100)}%
-              </div>
-              <div className="interact-scale">
-                <button
-                  className="interact-scale-btn"
-                  onClick={() => applyScale(scaleMulRef.current - 0.1)}
-                  title="缩小"
-                >
-                  −
-                </button>
-                <input
-                  type="range"
-                  min={MIN_SCALE}
-                  max={MAX_SCALE}
-                  step={0.05}
-                  value={scaleValue}
-                  onChange={(e) => applyScale(parseFloat(e.target.value))}
-                  className="interact-slider"
-                />
-                <button
-                  className="interact-scale-btn"
-                  onClick={() => applyScale(scaleMulRef.current + 0.1)}
-                  title="放大"
-                >
-                  +
-                </button>
-              </div>
-              <button
-                className="interact-reset"
-                onClick={resetPosition}
-                title="复位位置与缩放"
-              >
-                ⟲ 复位
-              </button>
-            </div>
-
-            {/* 视线跟随开关 */}
-            <div className="interact-section">
-              <div className="interact-toggle-row">
-                <span className="interact-section-title">视线跟随鼠标</span>
-                <button
-                  className={`interact-switch${eyeTracking ? " on" : ""}`}
-                  onClick={() => setEyeTracking((v) => !v)}
-                  title={eyeTracking ? "点击关闭视线跟随" : "点击开启视线跟随"}
-                >
-                  <span className="interact-switch-knob" />
-                </button>
-              </div>
-            </div>
+            {/* 右下角缩放手柄 */}
+            <div className="interact-resize-handle" onMouseDown={handleResizeStart} title="拖动调整大小" />
         </div>,
         document.body
       )}

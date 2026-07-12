@@ -13,6 +13,15 @@ interface Props {
   characterName?: string;
 }
 
+// 过滤 AI 回复中的括号场景/动作/情绪注释（全角括号，1-100字纯中文+标点内容）
+// 颜文字用半角括号()不受影响，含数字/英文的括号也保留
+export function cleanAssistantText(text: string): string {
+  return text
+    .replace(/（[^\n（）a-zA-Z0-9]{1,100}）/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 export default function ChatWindow({ messages, loading, characterName }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -32,7 +41,9 @@ export default function ChatWindow({ messages, loading, characterName }: Props) 
           {msg.role === "user" && (
             <Avatar size={36} icon={<User size={18} />} style={{ background: "#5c6bc0", flexShrink: 0 }} />
           )}
-          <div className={`message ${msg.role}`}>{msg.content}</div>
+          <div className={`message ${msg.role}`}>
+            {msg.role === "assistant" ? cleanAssistantText(msg.content) : msg.content}
+          </div>
         </div>
       ))}
       {loading && (

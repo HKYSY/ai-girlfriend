@@ -1,15 +1,13 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   Button,
   Progress,
   InputNumber,
   Segmented,
-  Card,
   Tag,
   Tooltip,
   Typography,
   Alert,
-  Space,
   message,
 } from "antd";
 import {
@@ -19,14 +17,11 @@ import {
   Gamepad2,
   Trophy,
   BookOpen,
-  ChevronLeft,
-  ChevronRight,
   Coins,
   UtensilsCrossed,
   Moon,
   ClipboardCheck,
   Lightbulb,
-  Clock,
   Play,
   RefreshCw,
   Flag,
@@ -52,9 +47,9 @@ import AchievementsPanel from "./AchievementsPanel";
 import DiaryPanel from "./DiaryPanel";
 import MoodDisplay from "./MoodDisplay";
 
-const { Text, Title } = Typography;
+const { Text } = Typography;
 
-interface SidebarProps {
+interface InteractPanelProps {
   characterId: string;
   petState: PetState | null;
   mood: number;
@@ -66,14 +61,30 @@ interface SidebarProps {
 type Tab = "status" | "shop" | "date" | "game" | "achievement" | "diary";
 type GameSubTab = "rps" | "guess" | "wheel";
 
-// 标签配置
+// 左侧图标导航配置
 const TAB_CONFIG: { key: Tab; label: string; icon: React.ReactNode }[] = [
-  { key: "status", label: "状态", icon: <HeartPulse size={22} /> },
-  { key: "shop", label: "商店", icon: <ShoppingBag size={22} /> },
-  { key: "date", label: "约会", icon: <Heart size={22} /> },
-  { key: "game", label: "游戏", icon: <Gamepad2 size={22} /> },
-  { key: "achievement", label: "成就", icon: <Trophy size={22} /> },
-  { key: "diary", label: "日记", icon: <BookOpen size={22} /> },
+  { key: "status", label: "状态", icon: <HeartPulse size={20} /> },
+  { key: "shop", label: "商店", icon: <ShoppingBag size={20} /> },
+  { key: "date", label: "约会", icon: <Heart size={20} /> },
+  { key: "game", label: "游戏", icon: <Gamepad2 size={20} /> },
+  { key: "achievement", label: "成就", icon: <Trophy size={20} /> },
+  { key: "diary", label: "日记", icon: <BookOpen size={20} /> },
+];
+
+// 约会活动按场景氛围分类
+const DATE_CATEGORIES: { key: string; label: string; emoji: string; ids: string[] }[] = [
+  { key: "fun", label: "娱乐", emoji: "🎮", ids: ["gaming", "movie", "karaoke", "concert", "amusement"] },
+  { key: "romantic", label: "浪漫", emoji: "💫", ids: ["stargazing", "sunrise", "fireworks", "beach"] },
+  { key: "daily", label: "日常", emoji: "🌿", ids: ["stroll", "shopping", "cooking", "picnic", "cycling"] },
+  { key: "relax", label: "放松", emoji: "♨️", ids: ["hotspring", "catcafe", "library", "museum"] },
+];
+
+// 商店分类
+const SHOP_CATEGORIES: { key: string; label: string; emoji: string }[] = [
+  { key: "food", label: "美食", emoji: "🍽️" },
+  { key: "drink", label: "饮品", emoji: "🥤" },
+  { key: "gift", label: "礼物", emoji: "🎁" },
+  { key: "medicine", label: "药品", emoji: "💊" },
 ];
 
 // ========== 幸运转盘段定义（与后端 WHEEL_SEGMENTS 一致） ==========
@@ -151,28 +162,23 @@ function getIntimacyLabel(intimacy: number): string {
   return "初识";
 }
 
-export default function Sidebar({
+export default function InteractPanel({
   characterId,
   petState,
   mood,
   onPetStateChange,
   onAIContext,
   onBubble,
-}: SidebarProps) {
-  const [collapsed, setCollapsed] = useState(false);
+}: InteractPanelProps) {
   const [activeTab, setActiveTab] = useState<Tab>("status");
-  const [contentWidth, setContentWidth] = useState(() => {
-    const saved = localStorage.getItem("sidebarWidth");
-    const n = saved ? parseInt(saved, 10) : NaN;
-    return !isNaN(n) && n >= 220 && n <= 560 ? n : 300;
-  });
-  const sidebarDragRef = useRef(false);
   const [shopItems, setShopItems] = useState<ShopItem[]>([]);
   const [dateActivities, setDateActivities] = useState<DateActivity[]>([]);
   const [busy, setBusy] = useState(false);
   const [gameResult, setGameResult] = useState<PetActionResult | null>(null);
 
   const [gameSubTab, setGameSubTab] = useState<GameSubTab>("rps");
+  const [dateCategory, setDateCategory] = useState<string>("fun");
+  const [shopCategory, setShopCategory] = useState<string>("food");
 
   const [guessRange, setGuessRange] = useState<number>(30);
   const [guessGame, setGuessGame] = useState<{
@@ -202,41 +208,9 @@ export default function Sidebar({
         setDateActivities(data.dateActivities);
         onPetStateChange(data.petState);
       })
-      .catch((e) => console.error("[Sidebar] 加载宠物状态失败:", e));
+      .catch((e) => console.error("[InteractPanel] 加载宠物状态失败:", e));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [characterId]);
-
-  useEffect(() => {
-    localStorage.setItem("sidebarWidth", String(contentWidth));
-  }, [contentWidth]);
-
-  const startSidebarDrag = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    sidebarDragRef.current = true;
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-  }, []);
-
-  useEffect(() => {
-    const onMouseMove = (e: MouseEvent) => {
-      if (!sidebarDragRef.current) return;
-      const newWidth = e.clientX - 60;
-      setContentWidth(Math.max(220, Math.min(560, newWidth)));
-    };
-    const onMouseUp = () => {
-      if (sidebarDragRef.current) {
-        sidebarDragRef.current = false;
-        document.body.style.cursor = "";
-        document.body.style.userSelect = "";
-      }
-    };
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp);
-    return () => {
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
-    };
-  }, []);
 
   const handleAction = useCallback(
     (result: PetActionResult) => {
@@ -427,208 +401,183 @@ export default function Sidebar({
   const today = new Date().toISOString().slice(0, 10);
   const signedToday = petState?.lastSignDate === today;
 
+  // 按分类筛选商店商品
+  const filteredShopItems = shopItems.filter((item) => item.category === shopCategory);
+  // 按分类筛选约会活动
+  const currentDateCat = DATE_CATEGORIES.find((c) => c.key === dateCategory);
+  const filteredDateActivities = dateActivities.filter((act) =>
+    currentDateCat?.ids.includes(act.id)
+  );
+
   return (
-    <div className={`sidebar${collapsed ? " collapsed" : ""}`}>
-      {/* 图标导航列 */}
-      <div className="sidebar-nav">
-        <Tooltip title={collapsed ? "展开" : "收起"} placement="right">
-          <button
-            className="sidebar-toggle"
-            onClick={() => setCollapsed((v) => !v)}
-          >
-            {collapsed ? <ChevronRight size={20} /> : <ChevronLeft size={20} />}
-          </button>
-        </Tooltip>
-        {TAB_CONFIG.map(({ key, label, icon }) => (
-          <Tooltip key={key} title={label} placement="right">
-            <button
-              className={`sidebar-tab-btn${activeTab === key ? " active" : ""}`}
-              onClick={() => {
-                setActiveTab(key);
-                setCollapsed(false);
-              }}
-            >
-              <span className="sidebar-tab-icon">{icon}</span>
-              <span className="sidebar-tab-label">{label}</span>
-            </button>
-          </Tooltip>
-        ))}
+    <div className="interact-panel-inner">
+      {/* 顶部金币栏 + 签到 */}
+      <div className="interact-coins-bar">
+        <div className="interact-coins">
+          <Coins size={18} color="#ffd54f" />
+          <span className="coin-value">{petState?.coins ?? 0}</span>
+          <Text type="secondary" style={{ fontSize: 12 }}>金币</Text>
+        </div>
+        <Button
+          type={signedToday ? "default" : "primary"}
+          size="small"
+          icon={<ClipboardCheck size={14} />}
+          onClick={handleSign}
+          disabled={busy || signedToday}
+        >
+          {signedToday ? "已签到" : "签到+20"}
+        </Button>
       </div>
 
-      {/* 内容面板 */}
-      {!collapsed && (
-        <div className="sidebar-content" style={{ width: `${contentWidth}px` }}>
-          <div
-            className="sidebar-resize-handle"
-            onMouseDown={startSidebarDrag}
-          />
+      <div className="interact-body">
+        {/* 左侧图标导航列 */}
+        <div className="interact-nav">
+          {TAB_CONFIG.map(({ key, label, icon }) => (
+            <Tooltip key={key} title={label} placement="right">
+              <button
+                className={`interact-nav-btn${activeTab === key ? " active" : ""}`}
+                onClick={() => setActiveTab(key)}
+              >
+                {icon}
+              </button>
+            </Tooltip>
+          ))}
+        </div>
 
-          {/* 金币栏 */}
-          <div className="sidebar-coins">
-            <Coins size={20} color="#ffd54f" />
-            <span className="coin-value">{petState?.coins ?? 0}</span>
-            <Text type="secondary" style={{ fontSize: 13 }}>金币</Text>
-          </div>
-
+        {/* 右侧内容区 */}
+        <div className="interact-content">
           {/* 状态面板 */}
           {activeTab === "status" && (
-            <div className="sidebar-panel">
-              <Title level={5} style={{ margin: "0 0 12px 0" }}>她的状态</Title>
-
+            <div className="interact-section">
               <MoodDisplay mood={mood} />
 
-              <Button
-                type={signedToday ? "default" : "primary"}
-                icon={<ClipboardCheck size={16} />}
-                onClick={handleSign}
-                disabled={busy || signedToday}
-                block
-                style={{ marginBottom: 16 }}
-              >
-                {signedToday ? "今日已签到" : "每日签到 +20"}
-              </Button>
-
-              {/* 状态条 */}
-              <Space direction="vertical" style={{ width: "100%", marginBottom: 12 }} size={12}>
-                <div>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                    <Space>
-                      <UtensilsCrossed size={16} color="#8d6e63" />
-                      <Text style={{ fontSize: 13 }}>饱腹感</Text>
-                    </Space>
-                    <Text type="secondary" style={{ fontSize: 12 }}>
+              <div className="interact-status-bars">
+                <div className="interact-status-item">
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
+                    <span style={{ fontSize: 12 }}>
+                      <UtensilsCrossed size={13} color="#8d6e63" /> 饱腹感
+                    </span>
+                    <Text type="secondary" style={{ fontSize: 11 }}>
                       {petState ? getHungerLabel(petState.hunger) : ""}
                     </Text>
                   </div>
-                  <Progress
-                    percent={petState?.hunger ?? 0}
-                    size="small"
-                    strokeColor={getHungerColor(petState?.hunger ?? 70)}
-                  />
+                  <Progress percent={petState?.hunger ?? 0} size="small" strokeColor={getHungerColor(petState?.hunger ?? 70)} />
                 </div>
 
-                <div>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                    <Space>
-                      <Moon size={16} color="#5c6bc0" />
-                      <Text style={{ fontSize: 13 }}>疲劳度</Text>
-                    </Space>
-                    <Text type="secondary" style={{ fontSize: 12 }}>
+                <div className="interact-status-item">
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
+                    <span style={{ fontSize: 12 }}>
+                      <Moon size={13} color="#5c6bc0" /> 疲劳度
+                    </span>
+                    <Text type="secondary" style={{ fontSize: 11 }}>
                       {petState ? getFatigueLabel(petState.fatigue) : ""}
                     </Text>
                   </div>
-                  <Progress
-                    percent={petState?.fatigue ?? 0}
-                    size="small"
-                    strokeColor={getFatigueColor(petState?.fatigue ?? 20)}
-                  />
+                  <Progress percent={petState?.fatigue ?? 0} size="small" strokeColor={getFatigueColor(petState?.fatigue ?? 20)} />
                 </div>
 
-                <div>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                    <Space>
-                      <Heart size={16} color="#e91e63" />
-                      <Text style={{ fontSize: 13 }}>亲密度</Text>
-                    </Space>
-                    <Text type="secondary" style={{ fontSize: 12 }}>
+                <div className="interact-status-item">
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
+                    <span style={{ fontSize: 12 }}>
+                      <Heart size={13} color="#e91e63" /> 亲密度
+                    </span>
+                    <Text type="secondary" style={{ fontSize: 11 }}>
                       {petState ? getIntimacyLabel(petState.intimacy) : ""}
                     </Text>
                   </div>
-                  <Progress
-                    percent={petState?.intimacy ?? 0}
-                    size="small"
-                    strokeColor="#e91e63"
-                  />
+                  <Progress percent={petState?.intimacy ?? 0} size="small" strokeColor="#e91e63" />
                 </div>
-              </Space>
+              </div>
 
               <Alert
                 type="info"
                 showIcon
-                icon={<Lightbulb size={16} />}
-                message="多聊天可以赚金币，每10条消息奖励5金币"
-                style={{ marginBottom: 12, fontSize: 12 }}
+                icon={<Lightbulb size={14} />}
+                title="每10条消息奖励5金币"
+                style={{ marginBottom: 8, fontSize: 11 }}
               />
 
               <MoodHistoryChart characterId={characterId} />
             </div>
           )}
 
-          {/* 商店面板 */}
+          {/* 商店面板（多级分类） */}
           {activeTab === "shop" && (
-            <div className="sidebar-panel">
-              <Title level={5} style={{ margin: "0 0 12px 0" }}>商店</Title>
-              <Space direction="vertical" style={{ width: "100%" }} size={8}>
-                {shopItems.map((item) => {
+            <div className="interact-section">
+              <Segmented
+                value={shopCategory}
+                onChange={(v) => setShopCategory(v as string)}
+                options={SHOP_CATEGORIES.map((c) => ({ label: `${c.emoji}${c.label}`, value: c.key }))}
+                size="small"
+                block
+                style={{ marginBottom: 8 }}
+              />
+              <div className="interact-list">
+                {filteredShopItems.map((item) => {
                   const canAfford = (petState?.coins ?? 0) >= item.price;
                   return (
-                    <Card
-                      key={item.id}
-                      size="small"
-                      styles={{ body: { padding: "10px 12px" } }}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        <span style={{ fontSize: 28 }}>{item.emoji}</span>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <Text strong>{item.name}</Text>
-                          <br />
-                          <Text type="secondary" style={{ fontSize: 12 }}>{item.desc}</Text>
-                        </div>
-                        <Button
-                          type="primary"
-                          size="small"
-                          disabled={busy || !canAfford}
-                          onClick={() => handleBuy(item.id)}
-                        >
-                          {item.price} 💰
-                        </Button>
-                      </div>
-                    </Card>
-                  );
-                })}
-              </Space>
-            </div>
-          )}
-
-          {/* 约会面板 */}
-          {activeTab === "date" && (
-            <div className="sidebar-panel">
-              <Title level={5} style={{ margin: "0 0 12px 0" }}>约会</Title>
-              <Space direction="vertical" style={{ width: "100%" }} size={8}>
-                {dateActivities.map((act) => (
-                  <Card
-                    key={act.id}
-                    size="small"
-                    styles={{ body: { padding: "10px 12px" } }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <span style={{ fontSize: 28 }}>{act.emoji}</span>
-                      <div style={{ flex: 1 }}>
-                        <Text strong>{act.name}</Text>
+                    <div key={item.id} className="interact-list-item">
+                      <span style={{ fontSize: 24 }}>{item.emoji}</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <Text strong style={{ fontSize: 13 }}>{item.name}</Text>
                         <br />
-                        <Tag icon={<Clock size={12} />} style={{ fontSize: 11, marginTop: 2 }}>
-                          {act.duration}
-                        </Tag>
+                        <Text type="secondary" style={{ fontSize: 11 }}>{item.desc}</Text>
                       </div>
                       <Button
                         type="primary"
                         size="small"
-                        icon={<Play size={14} />}
-                        disabled={busy}
-                        onClick={() => handleDate(act.id)}
+                        disabled={busy || !canAfford}
+                        onClick={() => handleBuy(item.id)}
                       >
-                        出发
+                        {item.price}💰
                       </Button>
                     </div>
-                  </Card>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* 约会面板（多级分类） */}
+          {activeTab === "date" && (
+            <div className="interact-section">
+              <Segmented
+                value={dateCategory}
+                onChange={(v) => setDateCategory(v as string)}
+                options={DATE_CATEGORIES.map((c) => ({ label: `${c.emoji}${c.label}`, value: c.key }))}
+                size="small"
+                block
+                style={{ marginBottom: 8 }}
+              />
+              <div className="interact-list">
+                {filteredDateActivities.map((act) => (
+                  <div key={act.id} className="interact-list-item">
+                    <span style={{ fontSize: 24 }}>{act.emoji}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <Text strong style={{ fontSize: 13 }}>{act.name}</Text>
+                      <br />
+                      <Tag icon={<Play size={10} />} style={{ fontSize: 10, marginTop: 2 }}>
+                        {act.duration}
+                      </Tag>
+                    </div>
+                    <Button
+                      type="primary"
+                      size="small"
+                      icon={<Play size={12} />}
+                      disabled={busy}
+                      onClick={() => handleDate(act.id)}
+                    >
+                      出发
+                    </Button>
+                  </div>
                 ))}
-              </Space>
+              </div>
             </div>
           )}
 
           {/* 游戏面板 */}
           {activeTab === "game" && (
-            <div className="sidebar-panel">
+            <div className="interact-section">
               <Segmented
                 value={gameSubTab}
                 onChange={(v) => setGameSubTab(v as GameSubTab)}
@@ -637,120 +586,82 @@ export default function Sidebar({
                   { label: "猜数字", value: "guess" },
                   { label: "转盘", value: "wheel" },
                 ]}
+                size="small"
                 block
-                style={{ marginBottom: 16 }}
+                style={{ marginBottom: 8 }}
               />
 
               {/* 猜拳 */}
               {gameSubTab === "rps" && (
                 <div>
-                  <Text type="secondary" style={{ fontSize: 12, display: "block", marginBottom: 12 }}>
-                    赢一局 +10 金币，平局 +2 金币
+                  <Text type="secondary" style={{ fontSize: 11, display: "block", marginBottom: 8 }}>
+                    赢+10 平+2 金币
                   </Text>
-
                   {gameResult && (
-                    <Card
-                      size="small"
-                      style={{ marginBottom: 12, textAlign: "center" }}
-                      styles={{ body: { padding: 12 } }}
-                    >
-                      <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 16, marginBottom: 8 }}>
-                        <span>你: {gameResult.userEmoji}</span>
-                        <Text type="secondary">VS</Text>
-                        <span>她: {gameResult.aiEmoji}</span>
-                      </div>
+                    <div style={{ textAlign: "center", marginBottom: 8, fontSize: 12 }}>
+                      你:{gameResult.userEmoji} VS 她:{gameResult.aiEmoji}
+                      <br />
                       <Text strong style={{
                         color: gameResult.result === "win" ? "#43a047" :
                                gameResult.result === "lose" ? "#e53935" : "#757575"
                       }}>
-                        {gameResult.result === "win" && "🎉 你赢了！"}
-                        {gameResult.result === "lose" && "😅 你输了～"}
+                        {gameResult.result === "win" && "🎉 赢了！"}
+                        {gameResult.result === "lose" && "😅 输了～"}
                         {gameResult.result === "draw" && "🤝 平局！"}
                         {gameResult.reward ? ` +${gameResult.reward}💰` : ""}
                       </Text>
-                    </Card>
+                    </div>
                   )}
-
-                  <Space style={{ width: "100%", justifyContent: "center" }} size={12}>
-                    <Button
-                      size="large"
-                      disabled={busy}
-                      onClick={() => handleGame("rock")}
-                      style={{ width: 72, height: 72, fontSize: 32 }}
-                    >
-                      ✊
-                    </Button>
-                    <Button
-                      size="large"
-                      disabled={busy}
-                      onClick={() => handleGame("scissors")}
-                      style={{ width: 72, height: 72, fontSize: 32 }}
-                    >
-                      ✌️
-                    </Button>
-                    <Button
-                      size="large"
-                      disabled={busy}
-                      onClick={() => handleGame("paper")}
-                      style={{ width: 72, height: 72, fontSize: 32 }}
-                    >
-                      ✋
-                    </Button>
-                  </Space>
+                  <div style={{ display: "flex", justifyContent: "center", gap: 8 }}>
+                    <Button size="large" disabled={busy} onClick={() => handleGame("rock")} style={{ width: 56, height: 56, fontSize: 26 }}>✊</Button>
+                    <Button size="large" disabled={busy} onClick={() => handleGame("scissors")} style={{ width: 56, height: 56, fontSize: 26 }}>✌️</Button>
+                    <Button size="large" disabled={busy} onClick={() => handleGame("paper")} style={{ width: 56, height: 56, fontSize: 26 }}>✋</Button>
+                  </div>
                 </div>
               )}
 
               {/* 猜数字 */}
               {gameSubTab === "guess" && (
                 <div>
-                  <Text type="secondary" style={{ fontSize: 12, display: "block", marginBottom: 12 }}>
-                    猜中目标数字赢金币，剩余次数越多奖励越高
+                  <Text type="secondary" style={{ fontSize: 11, display: "block", marginBottom: 8 }}>
+                    猜中目标数字赢金币
                   </Text>
-
                   {!guessGame?.finished && guessGame && (
-                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
-                      <Tag color="blue">范围 1-{guessGame.range}</Tag>
-                      <Tag color="orange">剩余 {guessGame.attemptsLeft}/{guessGame.maxAttempts}</Tag>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                      <Tag color="blue" style={{ fontSize: 10 }}>1-{guessGame.range}</Tag>
+                      <Tag color="orange" style={{ fontSize: 10 }}>剩余 {guessGame.attemptsLeft}/{guessGame.maxAttempts}</Tag>
                     </div>
                   )}
-
                   {!guessGame && (
                     <div>
-                      <Text style={{ fontSize: 13, display: "block", marginBottom: 8 }}>选择难度：</Text>
                       <Segmented
                         value={guessRange}
                         onChange={(v) => setGuessRange(v as number)}
                         options={[
-                          { label: "简单 1-30", value: 30 },
-                          { label: "中等 1-50", value: 50 },
-                          { label: "困难 1-100", value: 100 },
+                          { label: "简单", value: 30 },
+                          { label: "中等", value: 50 },
+                          { label: "困难", value: 100 },
                         ]}
+                        size="small"
                         block
-                        style={{ marginBottom: 12 }}
+                        style={{ marginBottom: 8 }}
                       />
-                      <Button
-                        type="primary"
-                        icon={<Play size={14} />}
-                        disabled={busy}
-                        onClick={() => handleGuessStart()}
-                        block
-                      >
+                      <Button type="primary" size="small" icon={<Play size={12} />} disabled={busy} onClick={() => handleGuessStart()} block>
                         开始游戏
                       </Button>
                     </div>
                   )}
-
                   {guessGame && !guessGame.finished && (
                     <div>
                       {guessGame.hint && guessGame.lastGuess !== null && (
                         <Alert
                           type={guessGame.hint === "big" ? "warning" : "info"}
-                          message={`${guessGame.lastGuess} ${guessGame.hint === "big" ? "猜大了 ⬆️" : "猜小了 ⬇️"}`}
-                          style={{ marginBottom: 8, fontSize: 13 }}
+                          title={`${guessGame.lastGuess} ${guessGame.hint === "big" ? "猜大了 ⬆️" : "猜小了 ⬇️"}`}
+                          style={{ marginBottom: 6, fontSize: 12 }}
                           showIcon
                         />
                       )}
-                      <Space.Compact style={{ width: "100%", marginBottom: 8 }}>
+                      <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
                         <InputNumber
                           style={{ flex: 1 }}
                           value={guessInput ? Number(guessInput) : undefined}
@@ -760,55 +671,29 @@ export default function Sidebar({
                           min={1}
                           max={guessGame.range}
                           disabled={busy}
+                          size="small"
                         />
-                        <Button
-                          type="primary"
-                          disabled={busy || !guessInput}
-                          onClick={handleGuess}
-                        >
+                        <Button type="primary" size="small" disabled={busy || !guessInput} onClick={handleGuess}>
                           猜
                         </Button>
-                      </Space.Compact>
-                      <Button
-                        size="small"
-                        danger
-                        type="text"
-                        icon={<Flag size={14} />}
-                        disabled={busy}
-                        onClick={() => {
-                          if (confirm("放弃这局？将无法获得奖励")) {
-                            setGuessGame(null);
-                            setGuessInput("");
-                          }
-                        }}
-                      >
-                        放弃重开
+                      </div>
+                      <Button size="small" danger type="text" icon={<Flag size={12} />} disabled={busy} onClick={() => {
+                        if (confirm("放弃这局？")) { setGuessGame(null); setGuessInput(""); }
+                      }}>
+                        放弃
                       </Button>
                     </div>
                   )}
-
                   {guessGame?.finished && (
-                    <Card
-                      style={{ textAlign: "center", marginBottom: 12 }}
-                      styles={{ body: { padding: 16 } }}
-                    >
-                      <div style={{ fontSize: 40, marginBottom: 8 }}>
-                        {guessGame.won ? "🎉" : "😢"}
-                      </div>
-                      <Text strong style={{ display: "block", marginBottom: 12 }}>
-                        {guessGame.won
-                          ? `猜中了！获得 ${guessGame.reward} 金币`
-                          : "没猜中，下次加油！"}
+                    <div style={{ textAlign: "center" }}>
+                      <div style={{ fontSize: 32, marginBottom: 4 }}>{guessGame.won ? "🎉" : "😢"}</div>
+                      <Text strong style={{ display: "block", marginBottom: 8, fontSize: 13 }}>
+                        {guessGame.won ? `猜中！+${guessGame.reward}💰` : "没猜中，加油！"}
                       </Text>
-                      <Button
-                        type="primary"
-                        icon={<RefreshCw size={14} />}
-                        disabled={busy}
-                        onClick={() => handleGuessStart()}
-                      >
+                      <Button type="primary" size="small" icon={<RefreshCw size={12} />} disabled={busy} onClick={() => handleGuessStart()}>
                         再来一局
                       </Button>
-                    </Card>
+                    </div>
                   )}
                 </div>
               )}
@@ -816,31 +701,23 @@ export default function Sidebar({
               {/* 幸运转盘 */}
               {gameSubTab === "wheel" && (
                 <div>
-                  <Text type="secondary" style={{ fontSize: 12, display: "block", marginBottom: 12 }}>
-                    投注金币旋转转盘，中了按倍数奖励，没中扣除本金
+                  <Text type="secondary" style={{ fontSize: 11, display: "block", marginBottom: 8 }}>
+                    投注旋转，中按倍数奖励
                   </Text>
-
-                  {/* 真实转盘 */}
-                  <div className="wheel-stage">
+                  <div className="wheel-stage" style={{ transform: "scale(0.75)", transformOrigin: "center top", marginBottom: -20 }}>
                     <div className="wheel-pointer" />
                     <div
                       className="wheel-circle"
                       style={{
                         background: `conic-gradient(${WHEEL_GRADIENT})`,
                         transform: `rotate(${wheelRotation}deg)`,
-                        transition: wheelSpinning
-                          ? "transform 3s cubic-bezier(0.17, 0.67, 0.12, 0.99)"
-                          : "none",
+                        transition: wheelSpinning ? "transform 3s cubic-bezier(0.17, 0.67, 0.12, 0.99)" : "none",
                       }}
                     >
                       {WHEEL_SEGMENTS.map((seg, i) => {
                         const { center } = WHEEL_SEGMENT_INFO[i];
                         return (
-                          <div
-                            key={i}
-                            className="wheel-label"
-                            style={{ transform: `rotate(${center}deg) translateY(-95px)` }}
-                          >
+                          <div key={i} className="wheel-label" style={{ transform: `rotate(${center}deg) translateY(-95px)` }}>
                             <span className="wheel-label-emoji">{seg.emoji}</span>
                             <span className="wheel-label-text">{seg.label}</span>
                           </div>
@@ -851,62 +728,36 @@ export default function Sidebar({
                       {wheelSpinning ? "🎯" : wheelResult ? wheelResult.segmentEmoji : "🎰"}
                     </div>
                   </div>
-
                   {wheelResult && !wheelSpinning && (
-                    <div
-                      className="wheel-result-banner"
-                      style={{ borderColor: wheelResult.segmentColor }}
-                    >
+                    <div className="wheel-result-banner" style={{ borderColor: wheelResult.segmentColor, marginBottom: 6 }}>
                       <span className="wheel-result-emoji">{wheelResult.segmentEmoji}</span>
                       <span className="wheel-result-label">{wheelResult.segmentLabel}</span>
-                      <span className="wheel-result-net" style={{
-                        color: (wheelResult.netChange ?? 0) >= 0 ? "#43a047" : "#e53935"
-                      }}>
+                      <span className="wheel-result-net" style={{ color: (wheelResult.netChange ?? 0) >= 0 ? "#43a047" : "#e53935" }}>
                         {(wheelResult.netChange ?? 0) >= 0 ? "+" : ""}{wheelResult.netChange}💰
                       </span>
                     </div>
                   )}
-
-                  <Space.Compact style={{ width: "100%", marginBottom: 8 }}>
+                  <div style={{ display: "flex", gap: 4, marginBottom: 4 }}>
                     <InputNumber
                       style={{ flex: 1 }}
                       value={wheelBet ? Number(wheelBet) : undefined}
                       onChange={(v) => setWheelBet(v ? String(v) : "")}
-                      placeholder="投注金额"
+                      placeholder="投注"
                       min={1}
                       max={petState?.coins ?? 0}
                       disabled={busy || wheelSpinning}
+                      size="small"
                     />
-                    <Button
-                      type="primary"
-                      disabled={busy || wheelSpinning}
-                      onClick={handleWheel}
-                    >
+                    <Button type="primary" size="small" disabled={busy || wheelSpinning} onClick={handleWheel}>
                       {wheelSpinning ? "旋转中..." : "旋转"}
                     </Button>
-                  </Space.Compact>
-
-                  <Space style={{ width: "100%" }} size={4}>
+                  </div>
+                  <div style={{ display: "flex", gap: 4 }}>
                     {[10, 50, 100].map((amt) => (
-                      <Button
-                        key={amt}
-                        size="small"
-                        disabled={busy}
-                        onClick={() => setWheelBet(String(amt))}
-                        style={{ flex: 1 }}
-                      >
-                        {amt}
-                      </Button>
+                      <Button key={amt} size="small" disabled={busy} onClick={() => setWheelBet(String(amt))} style={{ flex: 1 }}>{amt}</Button>
                     ))}
-                    <Button
-                      size="small"
-                      disabled={busy}
-                      onClick={() => setWheelBet(String(petState?.coins ?? 0))}
-                      style={{ flex: 1 }}
-                    >
-                      全部
-                    </Button>
-                  </Space>
+                    <Button size="small" disabled={busy} onClick={() => setWheelBet(String(petState?.coins ?? 0))} style={{ flex: 1 }}>全部</Button>
+                  </div>
                 </div>
               )}
             </div>
@@ -914,27 +765,19 @@ export default function Sidebar({
 
           {/* 成就面板 */}
           {activeTab === "achievement" && (
-            <div className="sidebar-panel">
-              <Title level={5} style={{ margin: "0 0 12px 0" }}>成就</Title>
-              <AchievementsPanel
-                characterId={characterId}
-                refreshKey={achievementRefreshKey}
-              />
+            <div className="interact-section">
+              <AchievementsPanel characterId={characterId} refreshKey={achievementRefreshKey} />
             </div>
           )}
 
           {/* 日记面板 */}
           {activeTab === "diary" && (
-            <div className="sidebar-panel">
-              <Title level={5} style={{ margin: "0 0 12px 0" }}>她的日记</Title>
-              <DiaryPanel
-                characterId={characterId}
-                refreshKey={achievementRefreshKey}
-              />
+            <div className="interact-section">
+              <DiaryPanel characterId={characterId} refreshKey={achievementRefreshKey} />
             </div>
           )}
         </div>
-      )}
+      </div>
     </div>
   );
 }
