@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
-import { Button, Card, Typography, Empty, Spin, message } from "antd";
-import { PenLine, CheckCircle2, CalendarDays } from "lucide-react";
-import { getDiary, generateDiary } from "../api";
+import { Card, Typography, Empty, Spin } from "antd";
+import { CalendarDays } from "lucide-react";
+import { getDiary } from "../api";
 import type { DiaryEntry } from "../api";
 
 const { Text, Paragraph } = Typography;
@@ -30,7 +30,6 @@ function moodEmoji(mood: number): string {
 export default function DiaryPanel({ characterId, refreshKey }: DiaryPanelProps) {
   const [entries, setEntries] = useState<DiaryEntry[]>([]);
   const [loading, setLoading] = useState(false);
-  const [generating, setGenerating] = useState(false);
   const [selectedEntry, setSelectedEntry] = useState<DiaryEntry | null>(null);
 
   const loadDiary = async () => {
@@ -53,25 +52,22 @@ export default function DiaryPanel({ characterId, refreshKey }: DiaryPanelProps)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [characterId, refreshKey]);
 
-  const handleGenerate = async () => {
-    if (generating) return;
-    setGenerating(true);
-    try {
-      const result = await generateDiary(characterId);
-      if (result.ok && result.entry) {
-        await loadDiary();
-        setSelectedEntry(result.entry);
-        message.success("日记写好了！");
-      } else if (result.error) {
-        message.error(result.error);
-      }
-    } catch (e) {
-      console.error("[DiaryPanel] 生成失败:", e);
-      message.error("生成日记失败");
-    } finally {
-      setGenerating(false);
+  // 判断昨天是否有日记
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayStr = yesterday.toISOString().slice(0, 10);
+  const yesterdayEntry = entries.find((e) => e.date === yesterdayStr);
+
+  // 状态条内容
+  const statusBar = (() => {
+    if (entries.length === 0) {
+      return { text: "💡 多聊天吧，日记会在第二天自动生成", color: "#90a4ae", bg: "rgba(144,164,174,0.08)" };
     }
-  };
+    if (yesterdayEntry) {
+      return { text: `📖 ${formatDate(yesterdayStr)} 日记已记录`, color: "#66bb6a", bg: "rgba(102,187,106,0.08)" };
+    }
+    return { text: "📝 昨天没有聊天记录", color: "#bdbdbd", bg: "rgba(189,189,189,0.06)" };
+  })();
 
   if (loading) {
     return (
@@ -84,47 +80,20 @@ export default function DiaryPanel({ characterId, refreshKey }: DiaryPanelProps)
   if (entries.length === 0) {
     return (
       <div>
-        <Button
-          type="primary"
-          icon={<PenLine size={16} />}
-          loading={generating}
-          onClick={handleGenerate}
-          block
-          style={{ marginBottom: 16 }}
-        >
-          {generating ? "正在写日记..." : "写新日记"}
-        </Button>
-        <Empty description="还没有日记，多聊聊天后让她写日记吧～" />
+        <Card size="small" style={{ marginBottom: 12, background: statusBar.bg, borderColor: statusBar.color }}>
+          <Text style={{ color: statusBar.color, fontSize: 13 }}>{statusBar.text}</Text>
+        </Card>
+        <Empty description="还没有日记，多聊聊天后第二天就能看到了～" />
       </div>
     );
   }
 
-  const today = new Date().toISOString().slice(0, 10);
-  const todayEntry = entries.find((e) => e.date === today);
-  // 统计今天日记的段落数（按时间标记【】计数）
-  const todaySegments = todayEntry
-    ? (todayEntry.content.match(/【[^】]+】/g) || []).length || 1
-    : 0;
-
   return (
     <div>
-      <Button
-        type="primary"
-        icon={<PenLine size={16} />}
-        loading={generating}
-        onClick={handleGenerate}
-        block
-        style={{ marginBottom: 12 }}
-      >
-        {generating ? "正在写日记..." : todayEntry ? "追加日记" : "写新日记"}
-      </Button>
-      {todayEntry && (
-        <Card size="small" style={{ marginBottom: 12, background: "rgba(102, 187, 106, 0.08)", borderColor: "#66bb6a" }}>
-          <Text style={{ color: "#66bb6a", display: "flex", alignItems: "center", gap: 6 }}>
-            <CheckCircle2 size={16} /> 今天日记已有 {todaySegments} 段
-          </Text>
-        </Card>
-      )}
+      {/* 状态条 */}
+      <Card size="small" style={{ marginBottom: 12, background: statusBar.bg, borderColor: statusBar.color }}>
+        <Text style={{ color: statusBar.color, fontSize: 13 }}>{statusBar.text}</Text>
+      </Card>
 
       <div className="diary-layout">
         {/* 日期列表 */}

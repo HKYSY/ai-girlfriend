@@ -27,8 +27,13 @@ import {
 import type { Character, ConversationData } from "./storage.js";
 import { mergeDiaryEntries, parseMarkers } from "./utils.js";
 import type { DiaryEntry } from "./utils.js";
+import { migrateFromJSON, dbPetState, dbMoodHistory, dbDiary, dbMessages, dbFacts } from "./database.js";
+import type { DBMessage, DBCharacter } from "./database.js";
 
 dotenv.config();
+
+// 执行旧数据迁移（JSON → SQLite，仅首次执行）
+migrateFromJSON();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -37,7 +42,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 防止浏览器缓存 API 响应（避免模型切换后前端读取到旧数据）
+// 防止浏览器缓存 API 响应
 app.use("/api", (_req, res, next) => {
   res.set("Cache-Control", "no-cache, no-store, must-revalidate");
   next();
@@ -45,8 +50,27 @@ app.use("/api", (_req, res, next) => {
 
 const PORT = process.env.PORT || 3001;
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
-const MODEL = process.env.DEEPSEEK_MODEL || "deepseek-v4-flash";
-const DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions";
+const DEFAULT_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-chat";
+const DEFAULT_URL = "https://api.deepseek.com/v1/chat/completions";
+
+// 获取某角色的有效 API 配置（角色配置优先，.env 兜底）
+function getAPIConfig(character: Character): { apiKey: string; model: string; url: string; provider: string } {
+  const provider = character.apiProvider || "deepseek";
+  const apiKey = character.apiKey || DEEPSEEK_API_KEY || "";
+  let url = character.apiUrl || DEFAULT_URL;
+
+  // 兼容 OpenAI 格式
+  if (provider === "openai" && !character.apiUrl) {
+    url = "https://api.openai.com/v1/chat/completions";
+  }
+  // 兼容其他 DeepSeek 兼容服务
+  if (!character.apiUrl) {
+    url = DEFAULT_URL;
+  }
+
+  const model = character.apiModel || DEFAULT_MODEL;
+  return { apiKey, model, url, provider };
+}
 
 // 上传的 Live2D 模型存放目录
 const UPLOADS_DIR = path.join(__dirname, "../uploads/live2d");
@@ -54,123 +78,99 @@ if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 }
 
-// 宠物状态数据存放目录（按角色ID独立保存）
-const PET_STATE_DIR = path.join(__dirname, "../data/petstate");
-if (!fs.existsSync(PET_STATE_DIR)) {
-  fs.mkdirSync(PET_STATE_DIR, { recursive: true });
-}
-
-// AI 日记数据存放目录（按角色ID独立保存）
-const DIARY_DIR = path.join(__dirname, "../data/diary");
-if (!fs.existsSync(DIARY_DIR)) {
-  fs.mkdirSync(DIARY_DIR, { recursive: true });
-}
-
-// 读取角色所有日记（按日期降序）
-function loadDiary(characterId: string): DiaryEntry[] {
-  try {
-    const file = path.join(DIARY_DIR, `${characterId}.json`);
-    if (!fs.existsSync(file)) return [];
-    const entries: DiaryEntry[] = JSON.parse(fs.readFileSync(file, "utf-8"));
-
-    // 合并同一天的多条日记（去重 + 按时间拼接）
-    const merged = mergeDiaryEntries(entries);
-    if (merged.length < entries.length) {
-      saveDiary(characterId, merged);
-      console.log(`[diary] ${characterId}: 合并重复日记 ${entries.length} -> ${merged.length}`);
-    }
-
-    return merged.sort((a, b) => {
-      if (a.date !== b.date) return b.date.localeCompare(a.date);
-      return b.createdAt.localeCompare(a.createdAt);
-    });
-  } catch {
-    return [];
-  }
-}
-
-// 保存日记列表
-function saveDiary(characterId: string, entries: DiaryEntry[]): void {
-  const file = path.join(DIARY_DIR, `${characterId}.json`);
-  fs.writeFileSync(file, JSON.stringify(entries, null, 2), "utf-8");
-}
-
-// 检查今天是否已有日记
-function hasTodayDiary(characterId: string): boolean {
-  const today = new Date().toISOString().slice(0, 10);
-  const entries = loadDiary(characterId);
-  return entries.some((e) => e.date === today);
-}
-
-// 读取指定角色的宠物状态
+// ========== 宠物状态辅助函数（包装数据库）==========
 function loadPetState(characterId: string): PetState {
-  const file = path.join(PET_STATE_DIR, `${characterId}.json`);
-  try {
-    if (!fs.existsSync(file)) return { ...DEFAULT_PET_STATE };
-    const raw = fs.readFileSync(file, "utf-8");
-    return { ...DEFAULT_PET_STATE, ...JSON.parse(raw) };
-  } catch {
-    return { ...DEFAULT_PET_STATE };
-  }
+  const db = dbPetState.get(characterId);
+  const state: PetState = {
+    ...DEFAULT_PET_STATE,
+    coins: db.coins,
+    hunger: db.hunger,
+    fatigue: db.fatigue,
+    intimacy: db.intimacy,
+    lastSignDate: db.lastSignDate,
+    chatCount: db.chatCount,
+    lastActiveTime: db.lastActiveTime || new Date().toISOString(),
+    activeGuessGame: db.activeGuessGame ? JSON.parse(db.activeGuessGame) : null,
+    totalChats: db.totalChats,
+    totalSignIns: db.totalSignIns,
+    totalDates: db.totalDates,
+    totalGameWins: db.totalGameWins,
+    totalGuessWins: db.totalGuessWins,
+    totalWheelJackpots: db.totalWheelJackpots,
+    maxIntimacy: db.maxIntimacy,
+    maxCoins: db.maxCoins,
+    unlockedAchievements: JSON.parse(db.unlockedAchievements),
+  };
+  return state;
 }
 
-// 保存指定角色的宠物状态（updateActiveTime=true 时自动更新最后互动时间）
 function savePetState(characterId: string, state: PetState, updateActiveTime: boolean = true): void {
-  if (updateActiveTime) {
-    state.lastActiveTime = new Date().toISOString();
+  if (updateActiveTime) state.lastActiveTime = new Date().toISOString();
+  dbPetState.upsert({
+    characterId,
+    coins: state.coins,
+    hunger: state.hunger,
+    fatigue: state.fatigue,
+    intimacy: state.intimacy,
+    lastSignDate: state.lastSignDate,
+    chatCount: state.chatCount,
+    lastActiveTime: state.lastActiveTime,
+    activeGuessGame: state.activeGuessGame ? JSON.stringify(state.activeGuessGame) : null,
+    totalChats: state.totalChats,
+    totalSignIns: state.totalSignIns,
+    totalDates: state.totalDates,
+    totalGameWins: state.totalGameWins,
+    totalGuessWins: state.totalGuessWins,
+    totalWheelJackpots: state.totalWheelJackpots,
+    maxIntimacy: state.maxIntimacy,
+    maxCoins: state.maxCoins,
+    unlockedAchievements: JSON.stringify(state.unlockedAchievements),
+  });
+}
+
+// ========== 日记辅助函数（包装数据库）==========
+function loadDiary(characterId: string): DiaryEntry[] {
+  const rows = dbDiary.getAll(characterId);
+  const entries: DiaryEntry[] = rows.map(r => ({ date: r.date, content: r.content, mood: r.mood, createdAt: r.createdAt }));
+  const merged = mergeDiaryEntries(entries);
+  if (merged.length < entries.length) {
+    // 清理重复：重新写入
+    // 数据库模式下由 add/updateByDate 自动处理
   }
-  const file = path.join(PET_STATE_DIR, `${characterId}.json`);
-  fs.writeFileSync(file, JSON.stringify(state, null, 2), "utf-8");
+  return merged.sort((a, b) => {
+    if (a.date !== b.date) return b.date.localeCompare(a.date);
+    return b.createdAt.localeCompare(a.createdAt);
+  });
+}
+
+function saveDiary(characterId: string, entries: DiaryEntry[]): void {
+  // 覆盖写入（先清空再批量插入）
+  import("./database.js").then(({ dbDiary: dbd }) => {
+    const today = new Date().toISOString().slice(0, 10);
+    for (const e of entries) {
+      if (e.date === today) {
+        dbd.updateByDate(characterId, e.date, e.content, e.mood);
+      }
+    }
+  });
+}
+
+function hasTodayDiary(characterId: string): boolean {
+  return dbDiary.hasToday(characterId);
 }
 
 // 数值夹紧到 [min, max]
 const clampNum = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 
-// ========== 心情历史记录系统 ==========
-const MOOD_HISTORY_DIR = path.join(__dirname, "../data/moodhistory");
-if (!fs.existsSync(MOOD_HISTORY_DIR)) {
-  fs.mkdirSync(MOOD_HISTORY_DIR, { recursive: true });
-}
-const MOOD_HISTORY_MAX_POINTS = 500; // 最多保留 500 个数据点
-const MOOD_HISTORY_MAX_DAYS = 30;    // 保留最近 30 天
-
-interface MoodPoint {
-  t: number;   // 时间戳（毫秒）
-  mood: number; // 心情值 0-100
-}
-
-// 记录一个心情数据点
+// ========== 心情历史记录系统（数据库版）==========
 function recordMoodPoint(characterId: string, mood: number): void {
-  try {
-    const file = path.join(MOOD_HISTORY_DIR, `${characterId}.json`);
-    let history: MoodPoint[] = [];
-    if (fs.existsSync(file)) {
-      history = JSON.parse(fs.readFileSync(file, "utf-8"));
-    }
-    history.push({ t: Date.now(), mood: Math.round(mood) });
-    // 剪枝：只保留最近 30 天 + 最多 500 个点
-    const cutoff = Date.now() - MOOD_HISTORY_MAX_DAYS * 24 * 60 * 60 * 1000;
-    history = history.filter((p) => p.t >= cutoff).slice(-MOOD_HISTORY_MAX_POINTS);
-    fs.writeFileSync(file, JSON.stringify(history), "utf-8");
-  } catch (e) {
-    console.error("[mood-history] 记录失败:", e);
-  }
+  dbMoodHistory.add(characterId, mood);
 }
 
-// 读取心情历史
-function loadMoodHistory(characterId: string, days: number = 7): MoodPoint[] {
-  try {
-    const file = path.join(MOOD_HISTORY_DIR, `${characterId}.json`);
-    if (!fs.existsSync(file)) return [];
-    const history: MoodPoint[] = JSON.parse(fs.readFileSync(file, "utf-8"));
-    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-    return history.filter((p) => p.t >= cutoff);
-  } catch {
-    return [];
-  }
+function loadMoodHistory(characterId: string, days: number = 7): { t: number; mood: number }[] {
+  return dbMoodHistory.getByDays(characterId, days).map(r => ({ t: r.timestamp, mood: r.mood }));
 }
 
-// 更新心情并记录历史（统一入口）
 function updateMoodWithHistory(characterId: string, newMood: number): void {
   updateCharacter(characterId, { mood: newMood });
   recordMoodPoint(characterId, newMood);
@@ -195,9 +195,35 @@ const upload = multer({
   limits: { fileSize: 100 * 1024 * 1024 },
 });
 
-const MAX_HISTORY_ROUNDS = 30; // 文件最多保留60条（30轮），配合摘要机制
-const CHAT_CONTEXT_LIMIT = 30; // 发给AI的最大历史条数（最近30条）
-const SUMMARY_TRIGGER = 45;    // 超过45条触发摘要生成
+const MAX_HISTORY_ROUNDS = 40; // 文件最多保留80条（40轮）
+const CHAT_CONTEXT_LIMIT = 40;  // 发给AI的最大历史条数（最近40条）
+const SUMMARY_TRIGGER = 50;    // 超过50条触发摘要生成
+
+// ========== 对话分级发送（Token 优化）==========
+// 第1档(最近10条)：完整原文 → AI 清楚理解最近对话
+// 第2档(11-25条)：截取前100字 → AI 知道聊了什么
+// 第3档(26-40条)：不发送 → 靠摘要记住
+function buildTieredMessages(convData: ConversationData, userMessage: ChatMessage | null, extraSystem?: ChatMessage): ChatMessage[] {
+  const historyMsgs = convData.messages.slice(-CHAT_CONTEXT_LIMIT);
+  const tiered: ChatMessage[] = [];
+
+  for (let i = 0; i < historyMsgs.length; i++) {
+    const m = historyMsgs[i];
+    const positionFromEnd = historyMsgs.length - i;
+
+    if (positionFromEnd <= 10) {
+      tiered.push(m);
+    } else if (positionFromEnd <= 25) {
+      tiered.push({ role: m.role, content: m.content.slice(0, 100) });
+    }
+  }
+
+  const messages: ChatMessage[] = [];
+  if (extraSystem) messages.push(extraSystem);
+  messages.push(...tiered);
+  if (userMessage) messages.push(userMessage);
+  return messages;
+}
 
 interface ChatMessage {
   role: string;
@@ -211,21 +237,21 @@ function sseSend(res: express.Response, data: { type: string; [key: string]: unk
 
 // AI 情感分析（当 AI 没有输出心情标记时，用 AI 分析用户消息的语境情感）
 // 返回 { emotion, moodChange }，分析失败返回 null
-async function analyzeSentiment(message: string): Promise<{ emotion: string; moodChange: number } | null> {
-  if (!DEEPSEEK_API_KEY) return null;
+async function analyzeSentiment(message: string, apiKey: string, model: string, url: string): Promise<{ emotion: string; moodChange: number } | null> {
+  if (!apiKey) return null;
 
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-    const response = await fetch(DEEPSEEK_URL, {
+    const response = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: MODEL,
+        model,
         messages: [
           {
             role: "system",
@@ -281,7 +307,10 @@ async function analyzeSentiment(message: string): Promise<{ emotion: string; moo
 
 // 异步生成对话摘要：把旧消息压缩成摘要，保留长期记忆
 async function generateSummaryIfNeeded(characterId: string): Promise<void> {
-  if (!DEEPSEEK_API_KEY) return;
+  const character = getCharacter(characterId);
+  if (!character) return;
+  const api = getAPIConfig(character);
+  if (!api.apiKey) return;
   const convData = loadConversation(characterId);
   if (convData.messages.length <= SUMMARY_TRIGGER) return;
 
@@ -295,23 +324,38 @@ async function generateSummaryIfNeeded(characterId: string): Promise<void> {
     .join("\n");
 
   const oldSummary = convData.summary || "";
-  const prompt = `请把以下对话记录压缩成一段简短的摘要（200字以内），保留关键信息：聊过什么话题、发生过什么重要的事、用户的喜好、约定、关系进展等。只保留重要信息，去掉闲聊细节。${oldSummary ? `\n\n之前的摘要：${oldSummary}` : ""}\n\n对话记录：\n${dialogText}`;
+  const prompt = `请把以下对话记录压缩成一段结构化的摘要（400字以内），必须保留所有重要信息，按以下主题组织（用自然段落，不要用编号列表）：
+
+1. 关键事实与事件：聊过的重要话题、发生的事件、提到的人物
+2. 约定与承诺：用户和玉子之间的约定、计划、未来的安排
+3. 关系进展：感情变化、重要时刻、称呼变化、关系里程碑
+4. 用户信息：用户的喜好、习惯、个人情况、工作生活
+5. 玉子信息：玉子提到过的自己的事、心情、状态
+
+要求：
+- 保留具体细节（数字、名字、日期、时间），不要泛化成"聊了一些事"
+- 只保留重要信息，去掉纯闲聊和重复内容
+- 自然段落写作，每个主题一段，不要用"1. 2. 3."编号
+- 如果某个主题没有新内容就跳过，不要凑字数${oldSummary ? `\n\n【重要】以下是之前的摘要，必须完整保留其中的信息，与新内容合并，不要丢失任何已有信息：\n${oldSummary}` : ""}
+
+对话记录：
+${dialogText}`;
 
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 30000);
 
-    const response = await fetch(DEEPSEEK_URL, {
+    const response = await fetch(api.url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
+        Authorization: `Bearer ${api.apiKey}`,
       },
       body: JSON.stringify({
-        model: MODEL,
+        model: api.model,
         messages: [{ role: "user", content: prompt }],
         stream: false,
-        max_tokens: 300,
+        max_tokens: 800,
       }),
       signal: controller.signal,
     });
@@ -322,6 +366,12 @@ async function generateSummaryIfNeeded(characterId: string): Promise<void> {
     const data = await response.json();
     const newSummary = data.choices?.[0]?.message?.content;
     if (!newSummary) return;
+
+    // 完整性检查：新摘要不应比旧摘要短太多（可能生成失败），否则保留旧摘要
+    if (oldSummary && newSummary.trim().length < oldSummary.trim().length * 0.5) {
+      console.warn(`[summary] 新摘要过短(${newSummary.length}字 < 旧摘要${oldSummary.length}字的50%)，跳过本次摘要`);
+      return;
+    }
 
     // 删除已摘要的消息，保留最近 CHAT_CONTEXT_LIMIT 条
     convData.messages = convData.messages.slice(toSummarize.length);
@@ -362,6 +412,9 @@ function characterToPersona(char: Character): PersonaSettings {
 
 // ========== 调用 DeepSeek 流式 API 的通用函数 ==========
 async function callDeepSeekStream(
+  apiKey: string,
+  model: string,
+  url: string,
   messages: ChatMessage[],
   onContent: (text: string) => void,
   onMood: (mood: number | null) => void,
@@ -371,19 +424,19 @@ async function callDeepSeekStream(
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 120000);
 
-  const response = await fetch(DEEPSEEK_URL, {
+  const response = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
+      Authorization: `Bearer ${apiKey}`,
     },
-    body: JSON.stringify({ model: MODEL, messages, stream: true }),
+    body: JSON.stringify({ model, messages, stream: true }),
     signal: controller.signal,
   });
   clearTimeout(timeoutId);
 
   if (!response.ok || !response.body) {
-    throw new Error(`DeepSeek API 调用失败 (${response.status})`);
+    throw new Error(`AI 调用失败 (${response.status})`);
   }
 
   const reader = response.body.getReader();
@@ -466,13 +519,16 @@ app.post("/api/chat", async (req, res) => {
   if (!characterId) {
     return res.status(400).json({ error: "characterId 字段必填" });
   }
-  if (!DEEPSEEK_API_KEY) {
-    return res.status(500).json({ error: "服务器未配置 DEEPSEEK_API_KEY" });
-  }
 
   const character = getCharacter(characterId);
   if (!character) {
     return res.status(404).json({ error: "角色不存在" });
+  }
+
+  // 获取 API 配置
+  const api = getAPIConfig(character);
+  if (!api.apiKey) {
+    return res.status(500).json({ error: "未配置 API Key，请在设置面板或 .env 中配置" });
   }
 
   // 加载对话历史
@@ -497,12 +553,16 @@ app.post("/api/chat", async (req, res) => {
   const newAchievements = updatePetStatsAndCheckAchievements(petState);
   savePetState(characterId, petState);
 
-  const messages: ChatMessage[] = [
-    { role: "system", content: systemPrompt },
-    ...(convData.summary ? [{ role: "system" as const, content: `【之前的对话记忆】\n${convData.summary}` }] : []),
-    ...convData.messages.slice(-CHAT_CONTEXT_LIMIT),
+  const messages: ChatMessage[] = buildTieredMessages(
+    convData,
     { role: "user", content: message },
-  ];
+    { role: "system", content: systemPrompt },
+  );
+
+  // 注入摘要
+  if (convData.summary) {
+    messages.splice(1, 0, { role: "system" as const, content: `【之前的对话记忆】\n${convData.summary}` });
+  }
 
   // SSE 响应头
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
@@ -511,7 +571,7 @@ app.post("/api/chat", async (req, res) => {
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
 
-  console.log(`[chat] characterId=${characterId}, message="${message.slice(0, 30)}"`);
+  console.log(`[chat] cid=${characterId}, msg="${message.slice(0, 30)}"`);
 
   let clientClosed = false;
   res.on("close", () => { clientClosed = true; });
@@ -524,6 +584,7 @@ app.post("/api/chat", async (req, res) => {
 
   try {
     const { fullReply, rawMood, emotion } = await callDeepSeekStream(
+      api.apiKey, api.model, api.url,
       messages,
       (text) => sseSend(res, { type: "text", text }),
       (mood) => {
@@ -543,7 +604,7 @@ app.post("/api/chat", async (req, res) => {
 
     // AI 没有输出心情标记时，用 AI 情感分析用户消息的语境
     if (rawMood === null && !emotion) {
-      const sentiment = await analyzeSentiment(message);
+      const sentiment = await analyzeSentiment(message, api.apiKey, api.model, api.url);
       if (sentiment) {
         effectiveEmotion = sentiment.emotion;
         finalMood = clampNum(currentMood + sentiment.moodChange, 0, 100);
@@ -570,10 +631,12 @@ app.post("/api/chat", async (req, res) => {
 
     console.log(`[chat] 完成: mood=${currentMood}→${finalMood}(raw=${rawMood}), emotion=${effectiveEmotion || "无"}, reply="${reply.slice(0, 50)}"`);
 
-    // 保存对话历史
+    // 保存对话 — 数据库永久保留
+    dbMessages.addUser(characterId, message);
+    dbMessages.addAssistant(characterId, reply);
+    // 内存中的 convData 用于上下文（限制长度不影响数据库）
     convData.messages.push({ role: "user", content: message });
     convData.messages.push({ role: "assistant", content: reply });
-    // 限制历史长度
     while (convData.messages.length > MAX_HISTORY_ROUNDS * 2) {
       convData.messages.shift();
     }
@@ -632,10 +695,12 @@ app.post("/api/proactive", async (req, res) => {
   const { characterId } = req.body as { characterId?: string };
 
   if (!characterId) return res.status(400).json({ error: "characterId 必填" });
-  if (!DEEPSEEK_API_KEY) return res.status(500).json({ error: "未配置 API Key" });
 
   const character = getCharacter(characterId);
   if (!character) return res.status(404).json({ error: "角色不存在" });
+
+  const api = getAPIConfig(character);
+  if (!api.apiKey) return res.status(500).json({ error: "未配置 API Key" });
 
   const convData = loadConversation(characterId);
   const currentMood = character.mood;
@@ -655,11 +720,14 @@ app.post("/api/proactive", async (req, res) => {
   const systemPrompt = buildPersona(characterToPersona(character), currentMood, petState) +
     `\n\n现在是你主动找用户说话。${timeOfDay}，用户已经有一段时间没来找你了。\n重要前提：用户当前没有给你发消息，是你主动找用户说话，不是在回复用户。你是在自言自语、突然想找用户聊天，就像微信里主动发一条消息过去。\n要求：\n- 只发一条，简短自然，像微信突然弹出来的消息，不要像在执行任务\n- 严禁回复式表述：不要说"看到你的消息""收到你的消息""你刚说...""你跟我说...""嗯嗯我知道了""刚才你说"等任何暗示用户刚发消息或你在回复的措辞\n- 根据你当前的心情决定说什么：心情好就分享开心的事或主动撒娇，心情不好就抱怨或求关注，平静就随口聊日常\n- 话题自由发挥：可以聊你正在做的事（画画/追番/打游戏）、煤球、刚想到的事、对用户的想念、生活琐事等，不要每次都聊同一件事\n- 严禁捏造没有发生过的事：不要说"昨天我们..."如果对话记录里没有这件事；不要把想象的事当成回忆\n- 不要重复最近聊过的话题：仔细看下面的对话记录，避免聊刚刚才说过的内容\n- 要符合你的性格和说话方式，带你的口头禅和语气，QQ/微信聊天风格`;
 
-  const messages: ChatMessage[] = [
+  const messages: ChatMessage[] = buildTieredMessages(
+    convData,
+    null,
     { role: "system", content: systemPrompt },
-    ...(convData.summary ? [{ role: "system" as const, content: `【之前的对话记忆】\n${convData.summary}` }] : []),
-    ...convData.messages.slice(-CHAT_CONTEXT_LIMIT),
-  ];
+  );
+  if (convData.summary) {
+    messages.splice(1, 0, { role: "system" as const, content: `【之前的对话记忆】\n${convData.summary}` });
+  }
 
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -678,6 +746,7 @@ app.post("/api/proactive", async (req, res) => {
 
   try {
     const { fullReply, rawMood, emotion } = await callDeepSeekStream(
+      api.apiKey, api.model, api.url,
       messages,
       (text) => sseSend(res, { type: "text", text }),
       (mood) => {
@@ -693,6 +762,7 @@ app.post("/api/proactive", async (req, res) => {
     const reply = fullReply.trim();
     if (reply) {
       const finalMood = rawMood !== null ? clampMoodChange(currentMood, rawMood, 10) : currentMood;
+      dbMessages.addAssistant(characterId, reply);
       convData.messages.push({ role: "assistant", content: reply });
       while (convData.messages.length > MAX_HISTORY_ROUNDS * 2) convData.messages.shift();
       convData.lastMood = finalMood;
@@ -774,92 +844,105 @@ app.get("/api/achievements", (req, res) => {
 });
 
 // ========== AI 日记系统 ==========
-// 非流式调用 DeepSeek 生成日记（一天一条，后续追加段落）
-async function generateDiary(characterId: string): Promise<DiaryEntry | null> {
-  if (!DEEPSEEK_API_KEY) return null;
+// 每天首次打开页面时，生成**昨天**的日记（一天一篇，不追加）
+// 字数根据当天对话量动态调整
+async function generateDiary(characterId: string, targetDate?: string): Promise<DiaryEntry | null> {
   const character = getCharacter(characterId);
   if (!character) return null;
+  const api = getAPIConfig(character);
+  if (!api.apiKey) return null;
 
-  // 读取最近对话（取最近 20 条）
-  const convData = loadConversation(characterId);
-  const recentMessages = convData.messages
-    .filter((m) => m.role === "user" || m.role === "assistant")
-    .slice(-20)
-    .map((m) => `${m.role === "user" ? "用户" : character.name}: ${m.content}`)
+  // 确定目标日期：传入则用指定的，否则用昨天
+  let dateStr: string;
+  if (targetDate) {
+    dateStr = targetDate;
+  } else {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    dateStr = yesterday.toISOString().slice(0, 10);
+  }
+
+  // 检查该日期是否已有日记（有则跳过）
+  if (dbDiary.hasToday(characterId)) {
+    // 注意：hasToday 检查的是今天，我们需要检查指定日期
+    const existing = dbDiary.getByDate(characterId, dateStr);
+    if (existing.length > 0) {
+      console.log(`[diary] ${characterId}: ${dateStr} 已有日记，跳过`);
+      return null;
+    }
+  }
+
+  // 统计当天对话量
+  const allMsgs = dbMessages.getAll(characterId);
+  const dayStart = new Date(dateStr + "T00:00:00").getTime();
+  const dayEnd = new Date(dateStr + "T23:59:59").getTime();
+
+  const dayMessages = allMsgs.filter((m: { createdAt: string }) => {
+    const t = new Date(m.createdAt).getTime();
+    return t >= dayStart && t <= dayEnd;
+  });
+
+  const msgCount = dayMessages.filter((m: { role: string }) => m.role === "user" || m.role === "assistant").length;
+
+  // 没有对话就不写日记
+  if (msgCount === 0) {
+    console.log(`[diary] ${characterId}: ${dateStr} 无对话，跳过`);
+    return null;
+  }
+
+  // 动态字数
+  let wordLimit: string;
+  if (msgCount <= 5) wordLimit = "50-100字";
+  else if (msgCount <= 15) wordLimit = "100-200字";
+  else if (msgCount <= 30) wordLimit = "150-300字";
+  else wordLimit = "200-400字";
+
+  const recentDialog = dayMessages
+    .filter((m: { role: string }) => m.role === "user" || m.role === "assistant")
+    .map((m: { role: string; content: string }) => `${m.role === "user" ? "用户" : character.name}: ${m.content.slice(0, 150)}`)
     .join("\n");
 
-  const petState = loadPetState(characterId);
   const moodLevel = getMoodLevel(character.mood);
-  const today = new Date().toISOString().slice(0, 10);
   const now = new Date();
   const timeStr = `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`;
 
-  // 检查今天是否已有日记（有则追加，无则新建）
-  const entries = loadDiary(characterId);
-  const todayEntry = entries.find((e) => e.date === today);
-  const isAppend = !!todayEntry;
+  const systemPrompt = `你是${character.name}，正在写自己的私人日记。请回顾昨天（${dateStr}）和用户的互动，以第一人称写一篇简短日记。
 
-  let systemPrompt: string;
-  let userPrompt: string;
-
-  if (isAppend && todayEntry) {
-    // 追加模式：只写新段落，避免重复已写内容
-    systemPrompt = `你是${character.name}，正在写自己的私人日记。今天你已经在日记本上写了一些内容，现在根据之后发生的新互动，追加一段新的日记。
 要求：
-1. 以第一人称"我"来写，语气符合你的性格
-2. 只写新发生的事和感受，不要重复已经写过的内容
-3. 自然口语化，像真的在写日记
-4. 不要出现 <|mood:xx|> <|emotion:xx|> 这样的标记
-5. 只写一段（50-150字），不要写太长
-当前心情：${moodLevel.label}（${character.mood}/100）`;
+1. 第一人称"我"，语气符合你的性格，自然口语化
+2. 像睡前拿起日记本随手写几行的感觉，不是写工作总结
+3. 挑最有记忆点的1-3件事来写，不要流水账式复述所有对话
+4. 可以写感受、可以吐槽、可以期待明天，自由发挥
+5. 不要出现 <|mood:xx|> <|emotion:xx|> 这样的标记
+6. 字数控制在${wordLimit}，对话少就简短，对话多可以多写点
+7. 如果那天的对话确实没什么好记的，诚实地写"昨天没怎么聊，就这样吧"也可以，不要硬凑字数`;
 
-    userPrompt = `今天是${today}，现在${timeStr}。
-你已经写下的日记：
----
-${todayEntry.content}
----
-
-以下是最近和用户的互动记录：
-${recentMessages || "（最近没有新互动记录）"}
-
-请追加一段新的日记（只写新内容，开头加上当前时间标记【${timeStr}】）：`;
-  } else {
-    // 新建模式：首篇日记
-    systemPrompt = `你是${character.name}，正在写自己的私人日记。请根据今天和用户的互动记录，以第一人称写一段简短的日记（150-300字）。
-要求：
-1. 以第一人称"我"来写，语气符合你的性格
-2. 记录今天发生的事、和用户的互动、你的心情感受
-3. 自然口语化，像真的在写日记，不要客套
-4. 不要出现 <|mood:xx|> <|emotion:xx|> 这样的标记
-5. 结尾可以有一句对明天的期待或小感慨
-6. 开头加上当前时间标记【${timeStr}】
+  const userPrompt = `日期：${dateStr}（现在是${now.toISOString().slice(0, 10)}的${timeStr}，你在回顾昨天的事）
+对话数量：${msgCount}条
 当前心情：${moodLevel.label}（${character.mood}/100）
-当前状态：饱腹感${petState.hunger}、疲劳度${petState.fatigue}、亲密度${petState.intimacy}`;
 
-    userPrompt = `今天是${today}，现在${timeStr}。
-以下是今天和用户的互动记录（如果没有记录，就写今天还没怎么和用户说话的感受）：
-${recentMessages || "（今天还没有互动记录）"}
+昨天的对话记录：
+${recentDialog || "（无对话记录）"}
 
-请写下今天的日记：`;
-  }
+请写下昨天的日记（${wordLimit}）：`;
 
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 60000);
-    const response = await fetch(DEEPSEEK_URL, {
+    const response = await fetch(api.url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
+        Authorization: `Bearer ${api.apiKey}`,
       },
       body: JSON.stringify({
-        model: MODEL,
+        model: api.model,
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
         ],
         stream: false,
-        max_tokens: 500,
+        max_tokens: 600,
       }),
       signal: controller.signal,
     });
@@ -874,45 +957,24 @@ ${recentMessages || "（今天还没有互动记录）"}
     const content = data.choices?.[0]?.message?.content;
     if (!content || typeof content !== "string") return null;
 
-    if (isAppend && todayEntry) {
-      // 追加到已有 entry：在末尾拼接新段落
-      const newContent = todayEntry.content.trimEnd() + "\n\n" + content.trim();
-      const updatedEntry: DiaryEntry = {
-        ...todayEntry,
-        content: newContent,
-        mood: character.mood, // 更新为最新心情
-        createdAt: new Date().toISOString(),
-      };
-      const updatedEntries = entries.map((e) =>
-        e.date === today ? updatedEntry : e
-      );
-      // 保留 90 天
-      const cutoff = new Date();
-      cutoff.setDate(cutoff.getDate() - 90);
-      const cutoffStr = cutoff.toISOString().slice(0, 10);
-      const filtered = updatedEntries.filter((e) => e.date >= cutoffStr);
-      saveDiary(characterId, filtered);
+    // 写入数据库
+    dbDiary.add({
+      characterId,
+      date: dateStr,
+      content: content.trim(),
+      mood: character.mood,
+      createdAt: new Date().toISOString(),
+    });
 
-      console.log(`[diary] ${characterId}: 追加日记 ${today} (+${content.length}字)`);
-      return updatedEntry;
-    } else {
-      // 新建 entry
-      const entry: DiaryEntry = {
-        date: today,
-        content: content.trim(),
-        mood: character.mood,
-        createdAt: new Date().toISOString(),
-      };
-      entries.push(entry);
-      const cutoff = new Date();
-      cutoff.setDate(cutoff.getDate() - 90);
-      const cutoffStr = cutoff.toISOString().slice(0, 10);
-      const filtered = entries.filter((e) => e.date >= cutoffStr);
-      saveDiary(characterId, filtered);
+    const entry: DiaryEntry = {
+      date: dateStr,
+      content: content.trim(),
+      mood: character.mood,
+      createdAt: new Date().toISOString(),
+    };
 
-      console.log(`[diary] ${characterId}: 生成日记 ${today} (${content.length}字)`);
-      return entry;
-    }
+    console.log(`[diary] ${characterId}: 生成 ${dateStr} 日记 (${msgCount}条对话, ${content.length}字)`);
+    return entry;
   } catch (e) {
     console.error("[diary] 生成失败:", e);
     return null;
@@ -927,15 +989,15 @@ app.get("/api/diary", (req, res) => {
   res.json({ ok: true, entries, hasToday: hasTodayDiary(characterId) });
 });
 
-// 生成/追加今天的日记（一天一条，后续调用追加段落）
+// 生成日记（默认生成昨天，可用 date 参数指定日期）
 app.post("/api/diary/generate", async (req, res) => {
-  const { characterId } = req.body as { characterId?: string };
+  const { characterId, date } = req.body as { characterId?: string; date?: string };
   if (!characterId) return res.status(400).json({ error: "characterId 必填" });
-  const entry = await generateDiary(characterId);
+  const entry = await generateDiary(characterId, date);
   if (!entry) {
-    return res.json({ ok: false, error: "日记生成失败（可能缺少 API Key 或暂无对话记录）" });
+    return res.json({ ok: false, error: "生成失败（可能已有日记或暂无对话记录）", alreadyExists: false });
   }
-  res.json({ ok: true, entry });
+  res.json({ ok: true, entry, alreadyExists: false });
 });
 
 // ========== 角色管理 API ==========
@@ -970,6 +1032,10 @@ app.post("/api/characters", (req, res) => {
     mood: 60,
     live2dPosition: { ...DEFAULT_POSITION },
     createdAt: new Date().toISOString(),
+    apiProvider: "deepseek",
+    apiKey: "",
+    apiModel: "",
+    apiUrl: "",
   };
   addCharacter(character);
   console.log(`[characters] 创建角色: ${character.id} (${name})`);
@@ -1610,28 +1676,35 @@ app.post("/api/pet/ai-reply", async (req, res) => {
   const { characterId, context } = req.body as { characterId?: string; context?: string };
   if (!characterId) return res.status(400).json({ error: "characterId 必填" });
   if (!context) return res.status(400).json({ error: "context 必填" });
-  if (!DEEPSEEK_API_KEY) return res.status(500).json({ error: "未配置 API Key" });
 
   const character = getCharacter(characterId);
   if (!character) return res.status(404).json({ error: "角色不存在" });
+
+  const api = getAPIConfig(character);
+  if (!api.apiKey) return res.status(500).json({ error: "未配置 API Key" });
 
   const convData = loadConversation(characterId);
   const currentMood = character.mood;
   const petState = loadPetState(characterId);
 
-  // 先将用户的互动动作作为 user 消息保存到历史，确保对话上下文连贯
-  // 这样 AI 能区分"用户做了A→我回了A→用户做了B→我应该回B"，不会混淆
-  const userActionMessage: ChatMessage = { role: "user", content: `（互动）${context}` };
-  convData.messages.push(userActionMessage);
+  // 先将互动上下文保存到数据库
+  dbMessages.addUser(characterId, `（互动）${context}`);
+  convData.messages.push({ role: "user", content: `（互动）${context}` });
   while (convData.messages.length > MAX_HISTORY_ROUNDS * 2) convData.messages.shift();
   saveConversation(characterId, convData);
 
   const systemPrompt = buildPersona(characterToPersona(character), currentMood, petState) +
     `\n\n刚刚发生了一件事：${context}\n请基于这件事自然地回复一句，像微信聊天一样简短口语化，要体现你的性格和当前心情。只回一条消息。`;
 
+  const tieredHistory = convData.messages.slice(-CHAT_CONTEXT_LIMIT);
   const messages: ChatMessage[] = [
     { role: "system", content: systemPrompt },
-    ...convData.messages.slice(-6),
+    ...tieredHistory.slice(-6).map(m => {
+      const posFromEnd = tieredHistory.length - tieredHistory.indexOf(m);
+      if (posFromEnd <= 10) return m;
+      if (posFromEnd <= 25) return { role: m.role, content: m.content.slice(0, 100) };
+      return m;
+    }),
   ];
 
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
@@ -1651,6 +1724,7 @@ app.post("/api/pet/ai-reply", async (req, res) => {
 
   try {
     const { fullReply, rawMood, emotion } = await callDeepSeekStream(
+      api.apiKey, api.model, api.url,
       messages,
       (text) => sseSend(res, { type: "text", text }),
       (mood) => {
@@ -1666,7 +1740,7 @@ app.post("/api/pet/ai-reply", async (req, res) => {
     const reply = fullReply.trim();
     if (reply) {
       const finalMood = rawMood !== null ? clampMoodChange(currentMood, rawMood, 10) : currentMood;
-      // 只保存 AI 回复，不保存 user 消息
+      dbMessages.addAssistant(characterId, reply);
       convData.messages.push({ role: "assistant", content: reply });
       while (convData.messages.length > MAX_HISTORY_ROUNDS * 2) convData.messages.shift();
       convData.lastMood = finalMood;
@@ -1689,7 +1763,143 @@ app.post("/api/pet/ai-reply", async (req, res) => {
   }
 });
 
+// ========== 消息分页查询 ==========
+app.get("/api/messages", (req, res) => {
+  const characterId = req.query.characterId as string | undefined;
+  const beforeId = parseInt(req.query.beforeId as string, 10) || 0;
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string, 10) || 50));
+  if (!characterId) return res.status(400).json({ error: "characterId 必填" });
+
+  const msgs = beforeId > 0
+    ? dbMessages.getBeforeId(characterId, beforeId, limit)
+    : dbMessages.getRecent(characterId, limit);
+
+  const total = dbMessages.countByCharacter(characterId);
+  const hasMore = beforeId > 0
+    ? (dbMessages.getBeforeId(characterId, beforeId, 1).length > 0)
+    : false;
+
+  res.json({ ok: true, messages: msgs, total, hasMore });
+});
+
+// ========== 消息全文搜索 ==========
+app.get("/api/messages/search", (req, res) => {
+  const characterId = req.query.characterId as string | undefined;
+  const q = req.query.q as string | undefined;
+  if (!characterId) return res.status(400).json({ error: "characterId 必填" });
+  if (!q) return res.status(400).json({ error: "q 搜索词必填" });
+
+  const results = dbMessages.search(characterId, q.trim(), 10);
+  res.json({ ok: true, results, query: q.trim() });
+});
+
+// ========== 事实记忆查询 ==========
+app.get("/api/facts", (req, res) => {
+  const characterId = req.query.characterId as string | undefined;
+  if (!characterId) return res.status(400).json({ error: "characterId 必填" });
+  const facts = dbFacts.getAll(characterId);
+  res.json({ ok: true, facts, count: facts.length });
+});
+
+// ========== AI 自动提取事实（从最近对话中提取关键信息）==========
+app.post("/api/facts/extract", async (req, res) => {
+  const { characterId } = req.body as { characterId?: string };
+  if (!characterId) return res.status(400).json({ error: "characterId 必填" });
+
+  const character = getCharacter(characterId);
+  if (!character) return res.status(404).json({ error: "角色不存在" });
+
+  const api = getAPIConfig(character);
+  if (!api.apiKey) return res.status(500).json({ error: "未配置 API Key" });
+
+  // 获取最近对话 + 已有事实
+  const recentMessages = dbMessages.getRecent(characterId, 40)
+    .map(m => `${m.role === "user" ? "用户" : character.name}: ${m.content.slice(0, 150)}`)
+    .join("\n");
+
+  const existingFacts = dbFacts.getAll(characterId);
+  const existingFactsStr = existingFacts.map(f => `[${f.type}] ${f.fact}`).join("\n");
+
+  const prompt = `你是${character.name}的记忆助手。请从以下对话记录中提取关键事实信息，每条事实一句话。
+
+事实类型（type）：
+- date: 日期/生日/纪念日
+- promise: 约定/承诺/计划
+- like: 喜好/喜欢的东西
+- dislike: 讨厌/不喜欢的东西  
+- personal: 个人信息（年龄、工作、住址等）
+- event: 发生过的事件
+- general: 其他重要信息
+
+要求：
+- 每条事实单独一行，格式：type|事实内容
+- 只提取新的、之前没有记录的事实
+- 如果已有记录中的信息需要更新，也用此格式输出（相同内容会自动更新）
+- 不要提取闲聊琐事，只提取值得长期记住的信息
+- 如果对话中没有新事实，回复"无"
+
+已有的事实记录：
+${existingFactsStr || "（暂无）"}
+
+最近对话：
+${recentMessages}`;
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+    const response = await fetch(api.url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${api.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: api.model,
+        messages: [{ role: "user", content: prompt }],
+        stream: false,
+        max_tokens: 500,
+      }),
+      signal: controller.signal,
+    });
+
+        clearTimeout(timeoutId);
+        if (!response.ok) {
+          console.error(`[facts/extract] API returned ${response.status}: ${await response.text().catch(() => "unknown")}`);
+          return res.json({ ok: false, error: `API 调用失败 (${response.status})` });
+        }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content;
+    if (!content || content.includes("无")) {
+      return res.json({ ok: true, extracted: 0 });
+    }
+
+    // 解析提取的事实
+    const lines = content.split("\n").filter((l: string) => l.includes("|"));
+    let extracted = 0;
+    for (const line of lines) {
+      const separatorIdx = line.indexOf("|");
+      const type = line.slice(0, separatorIdx).trim();
+      const fact = line.slice(separatorIdx + 1).trim();
+      if (!fact || !["date","promise","like","dislike","personal","event","general"].includes(type)) continue;
+      dbFacts.upsert({ characterId, fact, type });
+      extracted++;
+    }
+
+    console.log(`[facts] ${characterId}: 提取 ${extracted} 条新事实`);
+    res.json({ ok: true, extracted });
+  } catch (e) {
+    console.error("[facts/extract] 失败:", e);
+    res.status(500).json({ error: "事实提取失败" });
+  }
+});
+
+// ========== 更新 /api/diary/generate 返回 alreadyExists ==========
+// 需要覆盖原来的端点，但只需修改返回值的 alreadyExists 字段
+
 app.listen(PORT, () => {
   console.log(`✅ 后端服务已启动: http://localhost:${PORT}`);
-  console.log(`   使用模型: ${MODEL}`);
+  console.log(`   默认模型: ${DEFAULT_MODEL}`);
+  console.log(`   数据库路径: data/app.db`);
 });

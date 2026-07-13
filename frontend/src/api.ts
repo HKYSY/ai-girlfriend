@@ -16,6 +16,10 @@ export interface Character {
   mood: number;
   live2dPosition: { x: number; y: number; scale: number };
   createdAt: string;
+  apiProvider?: string;
+  apiKey?: string;
+  apiModel?: string;
+  apiUrl?: string;
 }
 
 export interface ConversationData {
@@ -547,7 +551,60 @@ export interface DiaryEntry {
   createdAt: string;
 }
 
-// 获取日记列表
+// ========== 消息分页查询（数据库版）==========
+export async function getMessages(
+  characterId: string,
+  beforeId?: number,
+  limit: number = 50
+): Promise<{
+  ok: boolean;
+  messages: Array<{ id: number; characterId: string; role: string; content: string; createdAt: string }>;
+  total: number;
+  hasMore: boolean;
+}> {
+  const params = new URLSearchParams({ characterId, limit: String(limit) });
+  if (beforeId && beforeId > 0) params.set("beforeId", String(beforeId));
+  const res = await fetch(`/api/messages?${params.toString()}`, { cache: "no-store" });
+  if (!res.ok) throw new Error("获取消息失败");
+  return res.json();
+}
+
+// ========== 消息全文搜索 ==========
+export async function searchMessages(characterId: string, query: string): Promise<{
+  ok: boolean;
+  results: Array<{ id: number; characterId: string; role: string; content: string; createdAt: string }>;
+  query: string;
+}> {
+  const res = await fetch(`/api/messages/search?characterId=${encodeURIComponent(characterId)}&q=${encodeURIComponent(query)}`, { cache: "no-store" });
+  if (!res.ok) throw new Error("搜索失败");
+  return res.json();
+}
+
+// ========== 事实记忆 ==========
+export interface MemoryFact {
+  id: number;
+  characterId: string;
+  fact: string;
+  type: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function getFacts(characterId: string): Promise<{ ok: boolean; facts: MemoryFact[]; count: number }> {
+  const res = await fetch(`/api/facts?characterId=${encodeURIComponent(characterId)}`, { cache: "no-store" });
+  if (!res.ok) throw new Error("获取事实失败");
+  return res.json();
+}
+
+export async function extractFacts(characterId: string): Promise<{ ok: boolean; extracted: number }> {
+  const res = await fetch("/api/facts/extract", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ characterId }),
+  });
+  if (!res.ok) throw new Error("事实提取失败");
+  return res.json();
+}
 export async function getDiary(characterId: string): Promise<{
   ok: boolean;
   entries: DiaryEntry[];
@@ -558,8 +615,8 @@ export async function getDiary(characterId: string): Promise<{
   return res.json();
 }
 
-// 生成今天的日记
-export async function generateDiary(characterId: string): Promise<{
+// 生成日记（默认生成昨天的）
+export async function generateDiary(characterId: string, date?: string): Promise<{
   ok: boolean;
   entry: DiaryEntry | null;
   alreadyExists: boolean;
@@ -568,7 +625,7 @@ export async function generateDiary(characterId: string): Promise<{
   const res = await fetch("/api/diary/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ characterId }),
+    body: JSON.stringify({ characterId, date }),
   });
   if (!res.ok) throw new Error("生成日记失败");
   return res.json();

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
-import { Modal, Input, Button, Segmented, message, Typography, Popconfirm, Space, Spin } from "antd";
-import { Trash2, Upload as UploadIcon, Save, Eraser } from "lucide-react";
+import { Modal, Input, Button, Segmented, message, Typography, Popconfirm, Space, Spin, Select } from "antd";
+import { Trash2, Upload as UploadIcon, Save, Eraser, Eye, EyeOff } from "lucide-react";
 import type { Character, Live2DModelInfo, PresetModel } from "../api";
 import { getModels, getPresetModels, uploadModel, deleteModel, updateCharacter, clearConversation } from "../api";
 
@@ -38,6 +38,12 @@ export default function SettingsPanel({
   const [saving, setSaving] = useState(false);
   const [modelName, setModelName] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // API 配置
+  const [apiProvider, setApiProvider] = useState("deepseek");
+  const [apiKey, setApiKey] = useState("");
+  const [apiModel, setApiModel] = useState("");
+  const [apiUrl, setApiUrl] = useState("");
+  const [showKey, setShowKey] = useState(false);
 
   useEffect(() => {
     if (open && character) {
@@ -45,6 +51,11 @@ export default function SettingsPanel({
       setTemplate(character.personalityTemplate);
       setCustom(character.customPersonality);
       setModelUrl(character.modelUrl);
+      setApiProvider((character as any).apiProvider || "deepseek");
+      setApiKey((character as any).apiKey || "");
+      setApiModel((character as any).apiModel || "");
+      setApiUrl((character as any).apiUrl || "");
+      setShowKey(false);
       loadModels();
     }
   }, [open, character]);
@@ -64,7 +75,11 @@ export default function SettingsPanel({
         personalityTemplate: template,
         customPersonality: custom,
         modelUrl,
-      });
+        apiProvider,
+        apiKey: apiKey.trim(),
+        apiModel: apiModel.trim(),
+        apiUrl: apiUrl.trim(),
+      } as any);
       onCharacterUpdated(updated);
       message.success("保存成功");
       onClose();
@@ -279,6 +294,63 @@ export default function SettingsPanel({
         <Text type="secondary" style={{ fontSize: 12, marginTop: 4, display: "block" }}>
           支持 ZIP/RAR/7Z/TAR/GZ 等格式，需包含 .model3.json 或 .model.json 文件
         </Text>
+      </div>
+
+      {/* AI 模型配置 */}
+      <div style={{ marginTop: 24, paddingTop: 20, borderTop: "1px solid #f0f0f0" }}>
+        <Text strong style={{ display: "block", marginBottom: 12 }}>🔌 AI 模型配置（可选）</Text>
+        <Text type="secondary" style={{ fontSize: 12, marginBottom: 12, display: "block" }}>
+          不填则使用全局默认配置（.env）
+        </Text>
+
+        <div style={{ marginBottom: 12 }}>
+          <Text style={{ fontSize: 13, marginBottom: 4, display: "block" }}>服务商</Text>
+          <Select
+            value={apiProvider}
+            onChange={(v) => setApiProvider(v)}
+            style={{ width: "100%" }}
+            options={[
+              { label: "DeepSeek", value: "deepseek" },
+              { label: "OpenAI", value: "openai" },
+              { label: "自定义", value: "custom" },
+            ]}
+          />
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <Text style={{ fontSize: 13, marginBottom: 4, display: "block" }}>API Key</Text>
+          <Input
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder="留空则使用全局配置"
+            type={showKey ? "text" : "password"}
+            suffix={
+              <Button type="text" size="small" onClick={() => setShowKey(!showKey)} style={{ padding: 0 }}>
+                {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
+              </Button>
+            }
+          />
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <Text style={{ fontSize: 13, marginBottom: 4, display: "block" }}>模型名称</Text>
+          <Input
+            value={apiModel}
+            onChange={(e) => setApiModel(e.target.value)}
+            placeholder={apiProvider === "deepseek" ? "deepseek-chat" : apiProvider === "openai" ? "gpt-4o" : "自定义模型名"}
+          />
+        </div>
+
+        {apiProvider === "custom" && (
+          <div style={{ marginBottom: 12 }}>
+            <Text style={{ fontSize: 13, marginBottom: 4, display: "block" }}>API 地址</Text>
+            <Input
+              value={apiUrl}
+              onChange={(e) => setApiUrl(e.target.value)}
+              placeholder="https://your-api.com/v1/chat/completions"
+            />
+          </div>
+        )}
       </div>
     </Modal>
   );

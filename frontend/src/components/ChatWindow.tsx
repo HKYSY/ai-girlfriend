@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
-import { Avatar, Spin } from "antd";
-import { User } from "lucide-react";
+import { Avatar, Spin, Button } from "antd";
+import { User, ArrowUp } from "lucide-react";
 
 export interface Message {
   role: "user" | "assistant";
@@ -11,10 +11,12 @@ interface Props {
   messages: Message[];
   loading: boolean;
   characterName?: string;
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
 }
 
-// 过滤 AI 回复中的括号场景/动作/情绪注释（全角括号，1-100字纯中文+标点内容）
-// 颜文字用半角括号()不受影响，含数字/英文的括号也保留
+// 过滤 AI 回复中的括号场景/动作/情绪注释
 export function cleanAssistantText(text: string): string {
   return text
     .replace(/（[^\n（）a-zA-Z0-9]{1,100}）/g, "")
@@ -22,15 +24,30 @@ export function cleanAssistantText(text: string): string {
     .trim();
 }
 
-export default function ChatWindow({ messages, loading, characterName }: Props) {
+export default function ChatWindow({ messages, loading, characterName, hasMore, loadingMore, onLoadMore }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
   return (
-    <div className="chat-window">
+    <div className="chat-window" ref={containerRef}>
+      {hasMore && (
+        <div style={{ textAlign: "center", padding: "8px 0" }}>
+          <Button
+            size="small"
+            type="text"
+            icon={<ArrowUp size={14} />}
+            loading={loadingMore}
+            onClick={onLoadMore}
+            style={{ color: "#90a4ae", fontSize: 12 }}
+          >
+            加载更早聊天记录
+          </Button>
+        </div>
+      )}
       {messages.map((msg, i) => (
         <div key={i} className={`message-row ${msg.role}`}>
           {msg.role === "assistant" && (

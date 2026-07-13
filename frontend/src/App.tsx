@@ -16,6 +16,8 @@ import {
   deleteCharacter,
   clearConversation,
   generateDiary,
+  getMessages,
+  extractFacts,
 } from "./api";
 import type { Character, PetState } from "./api";
 import { moodToEmoji } from "./utils";
@@ -48,6 +50,9 @@ export default function App() {
   // ========== 聊天状态 ==========
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [firstMessageId, setFirstMessageId] = useState<number>(0);
   const [mood, setMood] = useState(60);
   const [emotion, setEmotion] = useState<string | null>(null);
   const [bubbleText, setBubbleText] = useState<{ id: number; text: string } | null>(null);
@@ -111,8 +116,9 @@ export default function App() {
       setCurrentCharacter(char);
       setMood(char.mood);
       setEmotion(null);
-      // 加载对话历史
-      const histMessages: Message[] = detail.conversation.messages
+      // 从数据库加载最近消息（分页）
+      const msgData = await getMessages(id, 0, 50);
+      const histMessages: Message[] = msgData.messages
         .filter((m) => m.role === "user" || m.role === "assistant")
         .map((m) => ({
           role: m.role as "user" | "assistant",
@@ -125,23 +131,29 @@ export default function App() {
       } else {
         setMessages(histMessages);
       }
+      // 分页状态
+      setHasMore(msgData.total > histMessages.length);
+      const first = msgData.messages[0];
+      setFirstMessageId(first ? first.id : 0);
       // 重置活动时间和主动消息状态
       lastActivityRef.current = Date.now();
       proactiveActiveRef.current = false;
       setCharSelectorOpen(false);
+      // 异步提取事实
+      extractFacts(id).catch(() => {});
     } catch (e) {
       console.error("[App] 切换角色失败:", e);
     }
   };
 
-  // ========== 每天首次打开时自动生成日记 ==========
+  // ========== 每天首次打开时自动生成昨天日记 ==========
   useEffect(() => {
     if (!currentCharacter) return;
-    // 后端会判断今天是否已有日记，已有则直接返回，不会重复生成
+    // 后端会自动生成昨天的日记（已存在或昨天无对话则跳过）
     generateDiary(currentCharacter.id)
       .then((result) => {
-        if (result.ok && result.entry && !result.alreadyExists) {
-          console.log(`[diary] 已为 ${currentCharacter.name} 生成今日日记`);
+        if (result.ok && result.entry) {
+          console.log(`[diary] 已为 ${currentCharacter.name} 生成昨天日记`);
         }
       })
       .catch((e) => console.error("[diary] 自动生成失败:", e));
@@ -491,6 +503,32 @@ export default function App() {
     setBubbleText({ id: Date.now(), text });
   }, []);
 
+  // ========== 加载更早的聊天记录 ==========
+  const handleLoadMore = async () => {
+    if (!currentCharacter || loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    try {
+      const msgData = await getMessages(currentCharacter.id, firstMessageId, 50);
+      if (msgData.messages.length > 0) {
+        const olderMessages: Message[] = msgData.messages
+          .filter((m) => m.role === "user" || m.role === "assistant")
+          .map((m) => ({
+            role: m.role as "user" | "assistant",
+            content: m.content,
+          }));
+        setMessages((prev) => [...olderMessages, ...prev]);
+        setFirstMessageId(msgData.messages[0].id);
+        setHasMore(msgData.hasMore);
+      } else {
+        setHasMore(false);
+      }
+    } catch (e) {
+      console.error("[App] 加载更早消息失败:", e);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
   // ========== 可拖动分栏 ==========
   const draggingRef = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -683,6 +721,9 @@ export default function App() {
           messages={messages}
           loading={loading}
           characterName={currentCharacter?.name}
+          hasMore={hasMore}
+          loadingMore={loadingMore}
+          onLoadMore={handleLoadMore}
         />
         <ChatInput onSend={handleSend} disabled={loading || !currentCharacter} />
       </div>
