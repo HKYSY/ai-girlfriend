@@ -11,11 +11,16 @@ interface Props {
 
 export default function ChatInput({ onSend, disabled }: Props) {
   const [text, setText] = useState("");
+  const [particles, setParticles] = useState<{ id: number; x: number }[]>([]);
 
   const handleSend = () => {
     const trimmed = text.trim();
     if (!trimmed || disabled) return;
     onSend(trimmed);
+    // 发送时上抛心形粒子
+    const ids = Array.from({ length: 5 }, (_, i) => ({ id: Date.now() + i, x: Math.random() * 50 - 25 }));
+    setParticles((p) => [...p, ...ids]);
+    setTimeout(() => setParticles((p) => p.filter((x) => !ids.includes(x))), 900);
     setText("");
   };
 
@@ -35,18 +40,23 @@ export default function ChatInput({ onSend, disabled }: Props) {
         onChange={(e) => setText(e.target.value)}
         onKeyDown={handleKeyDown}
         disabled={disabled}
-        autoSize={{ minRows: 1, maxRows: 4 }}
-        // 超过 30 字（约一行容量）后 autoSize 自动增高，最多 4 行
+        autoSize={{ minRows: 2, maxRows: 6 }}
+        // 默认两行高，最多自动扩展到 6 行
       />
-      <Button
-        type="primary"
-        size="large"
-        icon={<Send size={16} />}
-        onClick={handleSend}
-        disabled={disabled || !text.trim()}
-      >
-        发送
-      </Button>
+      <div className="send-wrap">
+        {particles.map((p) => (
+          <span key={p.id} className="send-particle" style={{ ["--px" as any]: `${p.x}px` }}>♥</span>
+        ))}
+        <Button
+          type="primary"
+          size="large"
+          icon={<Send size={16} />}
+          onClick={handleSend}
+          disabled={disabled || !text.trim()}
+        >
+          发送
+        </Button>
+      </div>
     </div>
   );
 }

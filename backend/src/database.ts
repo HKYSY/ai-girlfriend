@@ -41,6 +41,7 @@ export interface DBCharacter {
   apiKey: string;
   apiModel: string;
   apiUrl: string;
+  avatarUrl: string;
 }
 
 export interface DBMessage {
@@ -114,6 +115,30 @@ export interface DBDiaryEntry {
   createdAt: string;
 }
 
+// 本地日期字符串 YYYY-MM-DD（避免 toISOString 的 UTC 偏移导致日期错位）
+export function localDateStr(d: Date = new Date()): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+// 规范化历史消息时间戳：把 datetime('now') 的 "YYYY-MM-DD HH:MM:SS"（UTC 但无时区标识）
+// 转成 ISO 8601 "YYYY-MM-DDTHH:MM:SS.000Z"，使 new Date() 能正确解析为 UTC 绝对时间
+export function normalizeMessageTimestamps(): void {
+  const rows = db.prepare("SELECT id, createdAt FROM messages WHERE createdAt NOT LIKE '%T%'").all() as { id: number; createdAt: string }[];
+  if (rows.length === 0) return;
+  const upd = db.prepare("UPDATE messages SET createdAt = ? WHERE id = ?");
+  const tx = db.transaction(() => {
+    for (const r of rows) {
+      const iso = r.createdAt.replace(" ", "T") + ".000Z";
+      upd.run(iso, r.id);
+    }
+  });
+  tx();
+  console.log(`[db] 规范化 ${rows.length} 条消息时间戳为 ISO 格式`);
+}
+
 // ========== 初始化 ==========
 export function initDatabase(): void {
   db.exec(`
@@ -132,7 +157,8 @@ export function initDatabase(): void {
       apiProvider TEXT DEFAULT 'deepseek',
       apiKey TEXT DEFAULT '',
       apiModel TEXT DEFAULT '',
-      apiUrl TEXT DEFAULT ''
+      apiUrl TEXT DEFAULT '',
+      avatarUrl TEXT DEFAULT ''
     );
 
     CREATE TABLE IF NOT EXISTS messages (
@@ -343,13 +369,14 @@ export const dbCharacters = {
   getAll: () => db.prepare("SELECT * FROM characters ORDER BY createdAt").all() as DBCharacter[],
   getById: (id: string) => db.prepare("SELECT * FROM characters WHERE id = ?").get(id) as DBCharacter | undefined,
   add: (c: DBCharacter) => {
-    db.prepare(`INSERT INTO characters (id, name, personalityTemplate, customPersonality, modelUrl, mood, positionX, positionY, positionScale, createdAt, apiProvider, apiKey, apiModel, apiUrl)
-      VALUES (@id, @name, @pt, @cp, @mu, @mood, @px, @py, @ps, @ca, @ap, @ak, @am, @au)`).run({
+    db.prepare(`INSERT INTO characters (id, name, personalityTemplate, customPersonality, modelUrl, mood, positionX, positionY, positionScale, createdAt, apiProvider, apiKey, apiModel, apiUrl, avatarUrl)
+      VALUES (@id, @name, @pt, @cp, @mu, @mood, @px, @py, @ps, @ca, @ap, @ak, @am, @au, @av)`).run({
       id: c.id, name: c.name, pt: c.personalityTemplate || "yuko", cp: c.customPersonality || "",
       mu: c.modelUrl || "/live2d/icegirl/IceGirl.model3.json", mood: c.mood || 60,
       px: c.positionX || 0, py: c.positionY || 0, ps: c.positionScale || 1,
       ca: c.createdAt || new Date().toISOString(),
       ap: c.apiProvider || "deepseek", ak: c.apiKey || "", am: c.apiModel || "", au: c.apiUrl || "",
+      av: c.avatarUrl || "",
     });
     return c;
   },
@@ -359,7 +386,7 @@ export const dbCharacters = {
     const merged = { ...existing, ...updates, id, updatedAt: new Date().toISOString() };
     db.prepare(`UPDATE characters SET name=@name, personalityTemplate=@personalityTemplate, customPersonality=@customPersonality,
       modelUrl=@modelUrl, mood=@mood, positionX=@positionX, positionY=@positionY, positionScale=@positionScale,
-      apiProvider=@apiProvider, apiKey=@apiKey, apiModel=@apiModel, apiUrl=@apiUrl, updatedAt=@updatedAt
+      apiProvider=@apiProvider, apiKey=@apiKey, apiModel=@apiModel, apiUrl=@apiUrl, avatarUrl=@avatarUrl, updatedAt=@updatedAt
       WHERE id=@id`).run(merged);
     return merged;
   },
@@ -372,10 +399,10 @@ export const dbCharacters = {
 // ========== 消息操作（永久保留 + 分页）==========
 export const dbMessages = {
   addUser: (characterId: string, content: string) => {
-    return db.prepare("INSERT INTO messages (characterId, role, content) VALUES (?, 'user', ?)").run(characterId, content);
+    return db.prepare("INSERT INTO messages (characterId, role, content, createdAt) VALUES (?, 'user', ?, ?)").run(characterId, content, new Date().toISOString());
   },
   addAssistant: (characterId: string, content: string) => {
-    return db.prepare("INSERT INTO messages (characterId, role, content) VALUES (?, 'assistant', ?)").run(characterId, content);
+    return db.prepare("INSERT INTO messages (characterId, role, content, createdAt) VALUES (?, 'assistant', ?, ?)").run(characterId, content, new Date().toISOString());
   },
   countByCharacter: (characterId: string) => {
     return (db.prepare("SELECT COUNT(*) as cnt FROM messages WHERE characterId = ?").get(characterId) as { cnt: number }).cnt;
@@ -516,7 +543,7 @@ export const dbDiary = {
     return db.prepare("SELECT * FROM diary WHERE characterId = ? ORDER BY date DESC, createdAt DESC").all(characterId) as DBDiaryEntry[];
   },
   hasToday: (characterId: string) => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = localDateStr();
     const row = db.prepare("SELECT COUNT(*) as cnt FROM diary WHERE characterId = ? AND date = ?").get(characterId, today) as { cnt: number };
     return row.cnt > 0;
   },
@@ -529,7 +556,7 @@ export const dbDiary = {
     // 清理 90 天以上
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - 90);
-    db.prepare("DELETE FROM diary WHERE characterId = ? AND date < ?").run(entry.characterId, cutoff.toISOString().slice(0, 10));
+    db.prepare("DELETE FROM diary WHERE characterId = ? AND date < ?").run(entry.characterId, localDateStr(cutoff));
   },
   updateByDate: (characterId: string, date: string, content: string, mood: number) => {
     db.prepare("UPDATE diary SET content = ?, mood = ?, createdAt = ? WHERE characterId = ? AND date = ?")
@@ -542,3 +569,7 @@ export { db };
 
 // 初始化（首次调用时执行）
 initDatabase();
+// 迁移：为旧库添加 avatarUrl 列（已存在则忽略）
+try { db.exec("ALTER TABLE characters ADD COLUMN avatarUrl TEXT DEFAULT ''"); } catch { /* 列已存在 */ }
+// 规范化历史消息时间戳（修复时区格式，使日记按本地日期正确归属）
+normalizeMessageTimestamps();

@@ -66,19 +66,27 @@ const DECORATION_EXPRESSIONS = new Set([
   "手柄", "披发", "猫耳", "王冠", "直播套装", "翅膀", "马尾",
 ]);
 
-// 点击反馈文字（随机一个）
-const CLICK_FEEDBACKS = ["♥", "呀！", "嗯？", "嘻嘻", "干嘛啦~", "嘿嘿"];
+// 点击反馈文字（随机一个，扩充更多类型）
+const CLICK_FEEDBACKS = [
+  "♥", "呀！", "嗯？", "嘻嘻", "干嘛啦~", "嘿嘿",
+  "哼~", "不要戳我！", "在呢~", "喵~", "哼哼", "嘿嘿嘿",
+  "干嘛呀", "嗯嗯~", "嘻", "呜...", "嘿嘿💕", "哼！",
+  "呀呼~", "诶嘿嘿", "别戳啦~", "在的在的", "嗯哼~", "qvq",
+];
 
-// 情绪 → 气泡短句映射（随机选一句）
+// 点击小概率触发的撒娇气泡
+const CLICK_BUBBLES = ["嘛~", "在呢~", "嗯哼~", "干嘛戳我~", "嘻嘻", "哼~", "陪陪我嘛~", "嘿嘿~"];
+
+// 情绪 → 气泡短句映射（随机选一句，每种情绪扩充到 8-10 句）
 const EMOTION_BUBBLES: Record<string, string[]> = {
-  "开心": ["嘻嘻~", "好开心！", "嘿嘿💕", "今天真好~", "开心开心~"],
-  "生气": ["哼！", "不理你了！", "气死了！", "哼唧~", "讨厌！"],
-  "难过": ["呜呜...", "好难过...", "想哭...", "抱抱我...", "心情不好..."],
-  "撒娇": ["嘛~", "抱抱嘛~", "人家想要~", "嗯哼~", "陪陪我嘛~"],
-  "惊讶": ["诶？！", "哇！", "不会吧？", "吓我一跳！", "真的吗？"],
-  "疑惑": ["嗯？", "什么呀？", "不懂...", "为什么呢？", "咦？"],
-  "害羞": ["讨厌啦~", "人家会害羞的~", "呜...", "不要这样~", "脸红了..."],
-  "平静": ["嗯~", "好的~", "在呢~", "嗯嗯~", "好呀~"],
+  "开心": ["嘻嘻~", "好开心！", "嘿嘿💕", "今天真好~", "开心开心~", "啦啦啦~", "超开心的！", "嘿嘿嘿~", "好心情！", "✨开心~"],
+  "生气": ["哼！", "不理你了！", "气死了！", "哼唧~", "讨厌！", "烦死了！", "哼，不想理你", "气呼呼", "再这样真生气了", "💢"],
+  "难过": ["呜呜...", "好难过...", "想哭...", "抱抱我...", "心情不好...", "唉...", "好委屈...", "不想说话...", "呜呜呜", "😭"],
+  "撒娇": ["嘛~", "抱抱嘛~", "人家想要~", "嗯哼~", "陪陪我嘛~", "不要嘛~", "嘿嘿嘛~", "求求啦~", "哼，哄我~", "🥺"],
+  "惊讶": ["诶？！", "哇！", "不会吧？", "吓我一跳！", "真的吗？", "哈？", "诶诶？", "天哪！", "什么？！", "😱"],
+  "疑惑": ["嗯？", "什么呀？", "不懂...", "为什么呢？", "咦？", "啊？", "什么意思？", "迷惑...", "🤔", "嗯...？"],
+  "害羞": ["讨厌啦~", "人家会害羞的~", "呜...", "不要这样~", "脸红了...", "别盯着我看啦~", "呜呜好害羞", "///", "🙈", "不要啦~"],
+  "平静": ["嗯~", "好的~", "在呢~", "嗯嗯~", "好呀~", "哦~", "嗯哼", "好哒~", "收到~", "😊"],
 };
 // 拖拽触发阈值（像素）
 const DRAG_THRESHOLD = 5;
@@ -104,6 +112,7 @@ export default function Live2DCanvas({
 }: Live2DCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+  const moodGlowRef = useRef<HTMLDivElement>(null);
   const modelRef = useRef<Live2DModel | null>(null);
   const appRef = useRef<PIXI.Application | null>(null);
   const baseScaleRef = useRef<number>(1);
@@ -289,12 +298,14 @@ export default function Live2DCanvas({
             });
             return;
           }
-          // 单击 → 显示反馈文字
-          const text =
-            CLICK_FEEDBACKS[
-              Math.floor(Math.random() * CLICK_FEEDBACKS.length)
-            ];
-          setFeedback({ id: Date.now(), text });
+          // 单击 → 80% 显示反馈文字，20% 触发撒娇气泡
+          if (Math.random() < 0.2) {
+            const bubbleText = CLICK_BUBBLES[Math.floor(Math.random() * CLICK_BUBBLES.length)];
+            setBubble({ id: Date.now(), text: bubbleText });
+          } else {
+            const text = CLICK_FEEDBACKS[Math.floor(Math.random() * CLICK_FEEDBACKS.length)];
+            setFeedback({ id: Date.now(), text });
+          }
         };
 
         window.addEventListener("mousemove", onMove);
@@ -318,6 +329,13 @@ export default function Live2DCanvas({
             overlayRef.current.style.top = `${m.y}px`;
             overlayRef.current.style.width = `${m.width}px`;
             overlayRef.current.style.height = `${m.height}px`;
+          }
+          // 心情光晕跟随模型（比模型大，在背后）
+          if (moodGlowRef.current) {
+            moodGlowRef.current.style.left = `${m.x - m.width * 0.25}px`;
+            moodGlowRef.current.style.top = `${m.y - m.height * 0.2}px`;
+            moodGlowRef.current.style.width = `${m.width * 1.5}px`;
+            moodGlowRef.current.style.height = `${m.height * 1.4}px`;
           }
           // 更新气泡位置（模型上方居中）
           if (bubbleRef.current) {
@@ -682,6 +700,15 @@ export default function Live2DCanvas({
       >
         {loading && <div className="stage-loading">立绘加载中…</div>}
       </div>
+
+      {/* 心情光晕（模型背后，颜色随心情变化） */}
+      <div
+        ref={moodGlowRef}
+        className="live2d-mood-glow"
+        style={{
+          background: `radial-gradient(circle, ${mood >= 70 ? "oklch(0.65 0.20 10 / 0.22)" : mood >= 40 ? "oklch(0.60 0.12 310 / 0.14)" : "oklch(0.50 0.16 240 / 0.18)"}, transparent 70%)`,
+        }}
+      />
 
       {/* overlay div：跟随模型位置/大小，接收鼠标事件（pointer-events: auto） */}
       <div

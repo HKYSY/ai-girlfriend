@@ -27,7 +27,7 @@ import {
 import type { Character, ConversationData } from "./storage.js";
 import { mergeDiaryEntries, parseMarkers } from "./utils.js";
 import type { DiaryEntry } from "./utils.js";
-import { migrateFromJSON, dbPetState, dbMoodHistory, dbDiary, dbMessages, dbFacts } from "./database.js";
+import { migrateFromJSON, dbPetState, dbMoodHistory, dbDiary, dbMessages, dbFacts, dbConvMeta, localDateStr } from "./database.js";
 import type { DBMessage, DBCharacter } from "./database.js";
 
 dotenv.config();
@@ -50,7 +50,7 @@ app.use("/api", (_req, res, next) => {
 
 const PORT = process.env.PORT || 3001;
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
-const DEFAULT_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-chat";
+const DEFAULT_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-v4-flash";
 const DEFAULT_URL = "https://api.deepseek.com/v1/chat/completions";
 
 // 获取某角色的有效 API 配置（角色配置优先，.env 兜底）
@@ -143,17 +143,7 @@ function loadDiary(characterId: string): DiaryEntry[] {
   });
 }
 
-function saveDiary(characterId: string, entries: DiaryEntry[]): void {
-  // 覆盖写入（先清空再批量插入）
-  import("./database.js").then(({ dbDiary: dbd }) => {
-    const today = new Date().toISOString().slice(0, 10);
-    for (const e of entries) {
-      if (e.date === today) {
-        dbd.updateByDate(characterId, e.date, e.content, e.mood);
-      }
-    }
-  });
-}
+
 
 function hasTodayDiary(characterId: string): boolean {
   return dbDiary.hasToday(characterId);
@@ -852,24 +842,21 @@ async function generateDiary(characterId: string, targetDate?: string): Promise<
   const api = getAPIConfig(character);
   if (!api.apiKey) return null;
 
-  // 确定目标日期：传入则用指定的，否则用昨天
+  // 确定目标日期：传入则用指定的，否则用昨天（本地日期）
   let dateStr: string;
   if (targetDate) {
     dateStr = targetDate;
   } else {
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
-    dateStr = yesterday.toISOString().slice(0, 10);
+    dateStr = localDateStr(yesterday);
   }
 
   // 检查该日期是否已有日记（有则跳过）
-  if (dbDiary.hasToday(characterId)) {
-    // 注意：hasToday 检查的是今天，我们需要检查指定日期
-    const existing = dbDiary.getByDate(characterId, dateStr);
-    if (existing.length > 0) {
-      console.log(`[diary] ${characterId}: ${dateStr} 已有日记，跳过`);
-      return null;
-    }
+  const existing = dbDiary.getByDate(characterId, dateStr);
+  if (existing.length > 0) {
+    console.log(`[diary] ${characterId}: ${dateStr} 已有日记，跳过`);
+    return null;
   }
 
   // 统计当天对话量
@@ -981,6 +968,19 @@ ${recentDialog || "（无对话记录）"}
   }
 }
 
+// 补生成最近 N 天缺失的日记（已有日记或无对话的日期自动跳过）
+async function backfillDiaries(characterId: string, days: number = 7): Promise<{ generated: string[]; checked: number }> {
+  const generated: string[] = [];
+  for (let i = 1; i <= days; i++) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const dateStr = localDateStr(d);
+    const entry = await generateDiary(characterId, dateStr);
+    if (entry) generated.push(dateStr);
+  }
+  return { generated, checked: days };
+}
+
 // 获取日记列表
 app.get("/api/diary", (req, res) => {
   const characterId = req.query.characterId as string | undefined;
@@ -998,6 +998,15 @@ app.post("/api/diary/generate", async (req, res) => {
     return res.json({ ok: false, error: "生成失败（可能已有日记或暂无对话记录）", alreadyExists: false });
   }
   res.json({ ok: true, entry, alreadyExists: false });
+});
+
+// 补生成最近 N 天缺失的日记
+app.post("/api/diary/backfill", async (req, res) => {
+  const { characterId, days } = req.body as { characterId?: string; days?: number };
+  if (!characterId) return res.status(400).json({ error: "characterId 必填" });
+  const safeDays = Math.min(30, Math.max(1, days || 7));
+  const result = await backfillDiaries(characterId, safeDays);
+  res.json({ ok: true, generated: result.generated, checked: result.checked });
 });
 
 // ========== 角色管理 API ==========
@@ -1036,6 +1045,7 @@ app.post("/api/characters", (req, res) => {
     apiKey: "",
     apiModel: "",
     apiUrl: "",
+    avatarUrl: "",
   };
   addCharacter(character);
   console.log(`[characters] 创建角色: ${character.id} (${name})`);
@@ -1065,6 +1075,24 @@ app.delete("/api/characters/:id/conversation", (req, res) => {
   res.json({ ok: true, message: "记忆已清空" });
 });
 
+// 导出某角色的全部对话记录（JSON 下载）
+app.get("/api/characters/:id/export", (req, res) => {
+  const char = getCharacter(req.params.id);
+  if (!char) return res.status(404).json({ error: "角色不存在" });
+  const messages = dbMessages.getAll(req.params.id).map((m) => ({
+    role: m.role,
+    content: m.content,
+    createdAt: m.createdAt,
+  }));
+  res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(char.name)}-conversation.json"`);
+  res.json({
+    character: { id: char.id, name: char.name, createdAt: char.createdAt, mood: char.mood },
+    messages,
+    total: messages.length,
+    exportedAt: new Date().toISOString(),
+  });
+});
+
 // ========== 性格模板 ==========
 app.get("/api/personality-templates", (_req, res) => {
   res.json(PERSONALITY_TEMPLATES);
@@ -1081,9 +1109,15 @@ app.get("/api/models", (_req, res) => {
       const files = fs.readdirSync(modelDir);
       const model3File = files.find((f) => f.endsWith(".model3.json"));
       if (model3File) {
+        // 读取自定义名字
+        let displayName = entry.name;
+        const nameFile = path.join(modelDir, ".model-name");
+        if (fs.existsSync(nameFile)) {
+          displayName = fs.readFileSync(nameFile, "utf-8").trim() || entry.name;
+        }
         models.push({
           id: entry.name,
-          name: entry.name,
+          name: displayName,
           modelUrl: `/api/models/${entry.name}/${model3File}`,
         });
       }
@@ -1203,8 +1237,11 @@ app.post("/api/upload-model", upload.single("model"), async (req, res) => {
     }
 
     const modelUrl = `/api/models/${modelId}/${modelFile}`;
-    // 优先使用用户自定义名字，否则用原始文件名
-    const customName = req.body?.name as string | undefined;
+    // 持久化自定义名字
+    const customName = (req.body?.name as string | undefined)?.trim();
+    if (customName) {
+      fs.writeFileSync(path.join(extractDir, ".model-name"), customName, "utf-8");
+    }
     res.json({
       ok: true,
       modelId,
@@ -1216,6 +1253,35 @@ app.post("/api/upload-model", upload.single("model"), async (req, res) => {
     console.error("模型上传失败:", err);
     fs.rmSync(tmpArchive, { force: true });
     res.status(500).json({ error: "模型上传处理失败，请检查压缩文件格式" });
+  }
+});
+
+// ========== 头像上传 ==========
+const AVATARS_DIR = path.join(__dirname, "../uploads/avatars");
+if (!fs.existsSync(AVATARS_DIR)) {
+  fs.mkdirSync(AVATARS_DIR, { recursive: true });
+}
+app.use("/api/avatars", express.static(AVATARS_DIR));
+
+const avatarUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 2 * 1024 * 1024 },
+});
+
+app.post("/api/upload-avatar", avatarUpload.single("avatar"), (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "请上传图片" });
+    const allowedTypes = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+    if (!allowedTypes.includes(req.file.mimetype)) {
+      return res.status(400).json({ error: "仅支持 JPG/PNG/GIF/WEBP 格式" });
+    }
+    const ext = req.file.originalname.split(".").pop() || "png";
+    const filename = `avatar-${Date.now()}.${ext}`;
+    fs.writeFileSync(path.join(AVATARS_DIR, filename), req.file.buffer);
+    res.json({ ok: true, url: `/api/avatars/${filename}` });
+  } catch (err) {
+    console.error("[avatar] 上传失败:", err);
+    res.status(500).json({ error: "头像上传失败" });
   }
 });
 
@@ -1897,6 +1963,68 @@ ${recentMessages}`;
 
 // ========== 更新 /api/diary/generate 返回 alreadyExists ==========
 // 需要覆盖原来的端点，但只需修改返回值的 alreadyExists 字段
+
+// ========== 全局统计：所有角色的数据总览 ==========
+app.get("/api/stats", (_req, res) => {
+  const chars = loadCharacters();
+  const stats = chars.map((c) => {
+    const msgCount = dbMessages.countByCharacter(c.id);
+    const meta = dbConvMeta.get(c.id);
+    const createdDate = new Date(c.createdAt);
+    const daysAgo = Math.max(1, Math.floor((Date.now() - createdDate.getTime()) / (1000 * 60 * 60 * 24)));
+    return {
+      id: c.id,
+      name: c.name,
+      mood: c.mood,
+      msgCount,
+      daysAgo,
+      lastActiveTime: meta?.lastActiveTime || c.createdAt,
+      modelUrl: c.modelUrl,
+    };
+  });
+  stats.sort((a, b) => b.msgCount - a.msgCount);
+  const totalMessages = stats.reduce((s, x) => s + x.msgCount, 0);
+  const totalDays = stats.reduce((s, x) => s + x.daysAgo, 0);
+  res.json({ ok: true, stats, totalMessages, totalCharacters: stats.length, totalDays });
+});
+
+// ========== 连接测试：验证 API 配置是否可用 ==========
+app.post("/api/test-connection", async (req, res) => {
+  const { provider, apiKey, apiModel, apiUrl } = req.body as {
+    provider?: string; apiKey?: string; apiModel?: string; apiUrl?: string;
+  };
+  const p = provider || "deepseek";
+  let url = apiUrl?.trim() || "";
+  if (p === "deepseek" && !url) url = DEFAULT_URL;
+  if (p === "openai" && !url) url = "https://api.openai.com/v1/chat/completions";
+  if (!url) return res.json({ ok: false, error: "未配置 API 地址" });
+
+  const key = apiKey?.trim() || DEEPSEEK_API_KEY || "";
+  const model = apiModel?.trim() || DEFAULT_MODEL;
+  if (!key) return res.json({ ok: false, error: "未配置 API Key（角色和 .env 均为空）" });
+
+  try {
+    const start = Date.now();
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ model, messages: [{ role: "user", content: "hi" }], max_tokens: 5, stream: false }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    const latency = Date.now() - start;
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      return res.json({ ok: false, error: `HTTP ${response.status}${errText ? ": " + errText.slice(0, 120) : ""}`, latency });
+    }
+    res.json({ ok: true, latency, model });
+  } catch (e) {
+    const msg = e instanceof Error ? (e.name === "AbortError" ? "请求超时（15秒）" : e.message) : "连接失败";
+    res.json({ ok: false, error: msg });
+  }
+});
 
 app.listen(PORT, () => {
   console.log(`✅ 后端服务已启动: http://localhost:${PORT}`);

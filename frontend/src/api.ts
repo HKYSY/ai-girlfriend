@@ -20,6 +20,7 @@ export interface Character {
   apiKey?: string;
   apiModel?: string;
   apiUrl?: string;
+  avatarUrl?: string;
 }
 
 export interface ConversationData {
@@ -628,5 +629,81 @@ export async function generateDiary(characterId: string, date?: string): Promise
     body: JSON.stringify({ characterId, date }),
   });
   if (!res.ok) throw new Error("生成日记失败");
+  return res.json();
+}
+
+// 补生成最近 N 天缺失的日记（已有日记或无对话的日期自动跳过）
+export async function backfillDiaries(characterId: string, days: number = 7): Promise<{
+  ok: boolean;
+  generated: string[];
+  checked: number;
+}> {
+  const res = await fetch("/api/diary/backfill", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ characterId, days }),
+  });
+  if (!res.ok) throw new Error("补生成日记失败");
+  return res.json();
+}
+
+// ========== 全局统计（所有角色数据总览） ==========
+export interface CharacterStat {
+  id: string;
+  name: string;
+  mood: number;
+  msgCount: number;
+  daysAgo: number;
+  lastActiveTime: string;
+  modelUrl: string;
+}
+
+export async function getStats(): Promise<{
+  ok: boolean;
+  stats: CharacterStat[];
+  totalMessages: number;
+  totalCharacters: number;
+  totalDays: number;
+}> {
+  const res = await fetch("/api/stats", { cache: "no-store" });
+  if (!res.ok) throw new Error("获取统计失败");
+  return res.json();
+}
+
+// 导出某角色的全部对话记录（返回 JSON Blob 供下载）
+export async function exportConversation(characterId: string): Promise<Blob> {
+  const res = await fetch(`/api/characters/${characterId}/export`, { cache: "no-store" });
+  if (!res.ok) throw new Error("导出失败");
+  return res.blob();
+}
+
+// ========== 连接测试 ==========
+export async function testConnection(config: {
+  provider: string;
+  apiKey: string;
+  apiModel: string;
+  apiUrl: string;
+}): Promise<{ ok: boolean; latency?: number; model?: string; error?: string }> {
+  const res = await fetch("/api/test-connection", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(config),
+  });
+  if (!res.ok) throw new Error("测试请求失败");
+  return res.json();
+}
+
+// ========== 头像上传 ==========
+export async function uploadAvatar(file: File): Promise<{ ok: boolean; url: string }> {
+  const formData = new FormData();
+  formData.append("avatar", file);
+  const res = await fetch("/api/upload-avatar", {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `上传失败 (${res.status})`);
+  }
   return res.json();
 }

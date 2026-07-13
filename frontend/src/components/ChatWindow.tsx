@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
-import { Avatar, Spin, Button } from "antd";
+import { useEffect, useRef, useState } from "react";
+import { Avatar, Button } from "antd";
 import { User, ArrowUp } from "lucide-react";
 
 export interface Message {
@@ -11,6 +11,8 @@ interface Props {
   messages: Message[];
   loading: boolean;
   characterName?: string;
+  characterAvatarUrl?: string;
+  userAvatarUrl?: string;
   hasMore?: boolean;
   loadingMore?: boolean;
   onLoadMore?: () => void;
@@ -24,13 +26,37 @@ export function cleanAssistantText(text: string): string {
     .trim();
 }
 
-export default function ChatWindow({ messages, loading, characterName, hasMore, loadingMore, onLoadMore }: Props) {
+export default function ChatWindow({ messages, loading, characterName, characterAvatarUrl, userAvatarUrl, hasMore, loadingMore, onLoadMore }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
+
+  const renderAiAvatar = () =>
+    characterAvatarUrl ? (
+      <img src={characterAvatarUrl} className="chat-avatar-img" alt="" />
+    ) : (
+      <Avatar size={36} style={{ background: "#e91e63", flexShrink: 0 }}>
+        {characterName?.charAt(0) || "念"}
+      </Avatar>
+    );
+
+  const renderUserAvatar = () =>
+    userAvatarUrl ? (
+      <img src={userAvatarUrl} className="chat-avatar-img" alt="" />
+    ) : (
+      <Avatar size={36} icon={<User size={18} />} style={{ background: "#5c6bc0", flexShrink: 0 }} />
+    );
+
+  // 新消息时触发底部光带
+  const prevLen = useRef(messages.length);
+  const [glowKey, setGlowKey] = useState(0);
+  useEffect(() => {
+    if (messages.length > prevLen.current) setGlowKey((k) => k + 1);
+    prevLen.current = messages.length;
+  }, [messages.length]);
 
   return (
     <div className="chat-window" ref={containerRef}>
@@ -50,14 +76,8 @@ export default function ChatWindow({ messages, loading, characterName, hasMore, 
       )}
       {messages.map((msg, i) => (
         <div key={i} className={`message-row ${msg.role}`}>
-          {msg.role === "assistant" && (
-            <Avatar size={36} style={{ background: "#e91e63", flexShrink: 0 }}>
-              {characterName?.charAt(0) || "念"}
-            </Avatar>
-          )}
-          {msg.role === "user" && (
-            <Avatar size={36} icon={<User size={18} />} style={{ background: "#5c6bc0", flexShrink: 0 }} />
-          )}
+          {msg.role === "assistant" && renderAiAvatar()}
+          {msg.role === "user" && renderUserAvatar()}
           <div className={`message ${msg.role}`}>
             {msg.role === "assistant" ? cleanAssistantText(msg.content) : msg.content}
           </div>
@@ -65,14 +85,14 @@ export default function ChatWindow({ messages, loading, characterName, hasMore, 
       ))}
       {loading && (
         <div className="message-row assistant">
-          <Avatar size={36} style={{ background: "#e91e63", flexShrink: 0 }}>
-            {characterName?.charAt(0) || "念"}
-          </Avatar>
+          {renderAiAvatar()}
           <div className="message assistant typing">
-            <Spin size="small" /> 她正在输入…
+            <span className="typing-dots"><i></i><i></i><i></i></span>
+            <span>她正在输入…</span>
           </div>
         </div>
       )}
+      {glowKey > 0 && <div className="new-msg-glow" key={glowKey} />}
       <div ref={bottomRef} />
     </div>
   );

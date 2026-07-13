@@ -55,7 +55,7 @@ export default function DiaryPanel({ characterId, refreshKey }: DiaryPanelProps)
   // 判断昨天是否有日记
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
-  const yesterdayStr = yesterday.toISOString().slice(0, 10);
+  const yesterdayStr = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, "0")}-${String(yesterday.getDate()).padStart(2, "0")}`;
   const yesterdayEntry = entries.find((e) => e.date === yesterdayStr);
 
   // 状态条内容

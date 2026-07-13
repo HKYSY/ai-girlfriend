@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import "./App.css";
+import "./settings.css";
 import ChatWindow, { type Message } from "./components/ChatWindow";
 import ChatInput from "./components/ChatInput";
 import Live2DCanvas from "./components/Live2DCanvas";
-import SettingsPanel from "./components/SettingsPanel";
+import MeteorCanvas from "./components/MeteorCanvas";
+import SettingsPage from "./components/SettingsPage";
 import {
   streamChat,
   streamProactive,
@@ -15,12 +17,18 @@ import {
   createCharacter,
   deleteCharacter,
   clearConversation,
-  generateDiary,
+  backfillDiaries,
   getMessages,
   extractFacts,
 } from "./api";
 import type { Character, PetState } from "./api";
 import { moodToEmoji } from "./utils";
+import {
+  getStoredTheme,
+  applyTheme,
+  persistTheme,
+  type ThemeMode,
+} from "./theme";
 
 // 默认分栏比例（Live2D 占比）
 const DEFAULT_SPLIT_RATIO = 0.55;
@@ -36,6 +44,34 @@ function loadSplitRatio(): number {
   const n = saved ? parseFloat(saved) : NaN;
   if (!isNaN(n) && n >= 0.2 && n <= 0.8) return n;
   return DEFAULT_SPLIT_RATIO;
+}
+
+// ========== 聊天外观（全局偏好，存 localStorage） ==========
+interface ChatAppearance {
+  userAvatarUrl: string;
+  aiBubbleColor: string;
+  userBubbleColor: string;
+  fontSize: number;
+}
+function loadChatAppearance(): ChatAppearance {
+  return {
+    userAvatarUrl: localStorage.getItem("chat_user_avatar") || "",
+    aiBubbleColor: localStorage.getItem("chat_ai_bubble") || "",
+    userBubbleColor: localStorage.getItem("chat_user_bubble") || "",
+    fontSize: parseInt(localStorage.getItem("chat_font_size") || "0", 10) || 0,
+  };
+}
+function applyChatAppearance(a: ChatAppearance) {
+  const root = document.documentElement;
+  const isDark = root.getAttribute("data-theme") === "dark";
+  // 深色模式下自定义气泡颜色降亮（混入深色背景），避免纯色过亮刺眼
+  const dim = (c: string) => (isDark ? `color-mix(in srgb, ${c} 60%, #0a0a14)` : c);
+  if (a.aiBubbleColor) root.style.setProperty("--chat-bubble-ai", dim(a.aiBubbleColor));
+  else root.style.removeProperty("--chat-bubble-ai");
+  if (a.userBubbleColor) root.style.setProperty("--chat-bubble-user", dim(a.userBubbleColor));
+  else root.style.removeProperty("--chat-bubble-user");
+  if (a.fontSize) root.style.setProperty("--chat-font-size", a.fontSize + "px");
+  else root.style.removeProperty("--chat-font-size");
 }
 
 // 心情值 → emoji（已提取到 utils.ts）
@@ -59,7 +95,6 @@ export default function App() {
 
   // ========== UI 状态 ==========
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // 强制关闭 Live2D 互动浮层的信号（每次打开设置时递增）
   const [closeSignal, setCloseSignal] = useState(0);
   const [splitRatio, setSplitRatio] = useState(loadSplitRatio);
   // 主动消息开关（关机按钮）：false 时 AI 不会自动发消息
@@ -69,6 +104,38 @@ export default function App() {
   // ref 始终指向最新值（供 setInterval 闭包读取）
   const proactiveEnabledRef = useRef(proactiveEnabled);
   proactiveEnabledRef.current = proactiveEnabled;
+
+  // ========== 主题状态 ==========
+  const [theme, setTheme] = useState<ThemeMode>(getStoredTheme);
+
+  // 应用主题 + 监听系统主题变化（跟随系统时实时响应）
+  useEffect(() => {
+    applyTheme(theme);
+    persistTheme(theme);
+  }, [theme]);
+
+  useEffect(() => {
+    if (theme !== "system") return;
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const handler = () => applyTheme("system");
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, [theme]);
+
+  // ========== 聊天外观 ==========
+  const [chatAppearance, setChatAppearance] = useState(loadChatAppearance);
+  useEffect(() => { applyChatAppearance(chatAppearance); }, [chatAppearance, theme]);
+  useEffect(() => {
+    const handler = () => setChatAppearance(loadChatAppearance());
+    window.addEventListener("chat-appearance-change", handler);
+    return () => window.removeEventListener("chat-appearance-change", handler);
+  }, []);
+
+  // 心情联动极光色调：心情高偏粉暖(310)，心情低偏蓝冷(240)
+  useEffect(() => {
+    const hue = 240 + (mood / 100) * 70;
+    document.documentElement.style.setProperty("--aurora-hue", String(hue));
+  }, [mood]);
 
   // ========== 桌宠状态 ==========
   const [petState, setPetState] = useState<PetState | null>(null);
@@ -149,14 +216,14 @@ export default function App() {
   // ========== 每天首次打开时自动生成昨天日记 ==========
   useEffect(() => {
     if (!currentCharacter) return;
-    // 后端会自动生成昨天的日记（已存在或昨天无对话则跳过）
-    generateDiary(currentCharacter.id)
+    // 补生成最近 7 天缺失的日记（已有日记或无对话的日期会自动跳过）
+    backfillDiaries(currentCharacter.id, 7)
       .then((result) => {
-        if (result.ok && result.entry) {
-          console.log(`[diary] 已为 ${currentCharacter.name} 生成昨天日记`);
+        if (result.generated.length > 0) {
+          console.log(`[diary] 已为 ${currentCharacter.name} 补生成 ${result.generated.length} 篇日记: ${result.generated.join(", ")}`);
         }
       })
-      .catch((e) => console.error("[diary] 自动生成失败:", e));
+      .catch((e) => console.error("[diary] 补生成失败:", e));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentCharacter?.id]);
 
@@ -581,6 +648,8 @@ export default function App() {
 
   return (
     <div className="app" ref={containerRef}>
+      <MeteorCanvas />
+      {loading && <div className="ambient-pulse" aria-hidden />}
       {/* 左侧：Live2D 立绘区 */}
       <div className="stage" style={{ flex: splitRatio }}>
         {/* 立绘顶部栏：角色选择器 */}
@@ -642,8 +711,9 @@ export default function App() {
 
         {/* Live2D 画布 */}
         <div className="stage-canvas">
-          {currentCharacter && (
+          {currentCharacter && !settingsOpen && (
             <Live2DCanvas
+              key={currentCharacter.modelUrl}
               modelUrl={currentCharacter.modelUrl}
               mood={mood}
               emotion={emotion}
@@ -721,6 +791,8 @@ export default function App() {
           messages={messages}
           loading={loading}
           characterName={currentCharacter?.name}
+          characterAvatarUrl={currentCharacter?.avatarUrl}
+          userAvatarUrl={chatAppearance.userAvatarUrl}
           hasMore={hasMore}
           loadingMore={loadingMore}
           onLoadMore={handleLoadMore}
@@ -728,13 +800,14 @@ export default function App() {
         <ChatInput onSend={handleSend} disabled={loading || !currentCharacter} />
       </div>
 
-      {currentCharacter && (
-        <SettingsPanel
-          open={settingsOpen}
-          onClose={() => setSettingsOpen(false)}
+      {settingsOpen && currentCharacter && (
+        <SettingsPage
           character={currentCharacter}
           onCharacterUpdated={handleCharacterUpdated}
           onMemoryCleared={handleMemoryCleared}
+          onBack={() => setSettingsOpen(false)}
+          theme={theme}
+          onThemeChange={setTheme}
         />
       )}
     </div>

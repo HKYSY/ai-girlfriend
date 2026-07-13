@@ -8,6 +8,22 @@
     <meta http-equiv="Expires" content="0" />
     <title>AI女友</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>💕</text></svg>" />
+    <!-- 在 CSS 应用前预设置主题，防止刷新后回到浅色 & 避免闪烁 -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("theme");
+          var mode = t === "light" || t === "dark" || t === "system" ? t : "light";
+          var resolved = mode;
+          if (mode === "system") {
+            resolved = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+          }
+          document.documentElement.setAttribute("data-theme", resolved);
+        } catch (e) {
+          document.documentElement.setAttribute("data-theme", "light");
+        }
+      })();
+    </script>
     <!-- Live2D Cubism Core 运行时（本地加载，避免 CDN 不稳定） -->
     <script src="/live2d.min.js"></script>
     <script src="/live2dcubismcore.min.js"></script>

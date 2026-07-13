@@ -17,7 +17,7 @@ interface SettingsPanelProps {
 const DEFAULT_MODEL_URL = "/live2d/icegirl/IceGirl.model3.json";
 
 const TEMPLATE_OPTIONS = [
-  { label: "玉子（推荐）", value: "yuko" },
+  { label: "玉子", value: "yuko" },
   { label: "自定义", value: "custom" },
 ];
 

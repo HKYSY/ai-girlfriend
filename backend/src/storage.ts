@@ -18,6 +18,7 @@ export interface Character {
   apiKey: string;
   apiModel: string;
   apiUrl: string;
+  avatarUrl?: string;
 }
 
 export interface ConversationData {
@@ -45,6 +46,7 @@ function toCharacter(db: DBCharacter): Character {
     apiKey: db.apiKey || "",
     apiModel: db.apiModel || "",
     apiUrl: db.apiUrl || "",
+    avatarUrl: db.avatarUrl || "",
   };
 }
 
@@ -59,6 +61,7 @@ function dbToCharRow(c: Character) {
     apiKey: c.apiKey || "",
     apiModel: c.apiModel || "",
     apiUrl: c.apiUrl || "",
+    avatarUrl: c.avatarUrl || "",
   } satisfies DBCharacter;
 }
 
@@ -96,6 +99,7 @@ export function updateCharacter(id: string, updates: Partial<Character>): Charac
   if (updates.apiKey !== undefined) dbUpdates.apiKey = updates.apiKey;
   if (updates.apiModel !== undefined) dbUpdates.apiModel = updates.apiModel;
   if (updates.apiUrl !== undefined) dbUpdates.apiUrl = updates.apiUrl;
+  if (updates.avatarUrl !== undefined) dbUpdates.avatarUrl = updates.avatarUrl;
   const result = dbCharacters.update(id, dbUpdates);
   return result ? toCharacter(result) : null;
 }

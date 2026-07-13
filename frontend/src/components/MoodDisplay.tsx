@@ -14,7 +14,7 @@ export default function MoodDisplay({ mood }: MoodDisplayProps) {
 
   return (
     <div className="mood-display" title={`心情：${info.label}（${clamped}/100）`}>
-      <span className="mood-emoji">{info.emoji}</span>
+      <span className="mood-emoji" key={info.level}>{info.emoji}</span>
       <Progress
         percent={clamped}
         size="small"
