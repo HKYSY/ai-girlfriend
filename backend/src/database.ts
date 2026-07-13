@@ -9,10 +9,11 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const DB_PATH = path.join(__dirname, "../data/app.db");
-
-// 确保 data 目录存在
-const DATA_DIR = path.dirname(DB_PATH);
+// 数据目录：桌面模式用系统目录（APP_DATA_DIR），开发模式用相对路径
+const DATA_DIR = process.env.APP_DATA_DIR
+  ? path.join(process.env.APP_DATA_DIR, "data")
+  : path.join(__dirname, "../data");
+const DB_PATH = path.join(DATA_DIR, "app.db");
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }

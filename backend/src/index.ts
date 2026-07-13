@@ -72,8 +72,11 @@ function getAPIConfig(character: Character): { apiKey: string; model: string; ur
   return { apiKey, model, url, provider };
 }
 
-// 上传的 Live2D 模型存放目录
-const UPLOADS_DIR = path.join(__dirname, "../uploads/live2d");
+// 上传目录：桌面模式用系统目录（APP_DATA_DIR），开发模式用相对路径
+const UPLOADS_BASE = process.env.APP_DATA_DIR
+  ? path.join(process.env.APP_DATA_DIR, "uploads")
+  : path.join(__dirname, "../uploads");
+const UPLOADS_DIR = path.join(UPLOADS_BASE, "live2d");
 if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 }
@@ -1257,7 +1260,7 @@ app.post("/api/upload-model", upload.single("model"), async (req, res) => {
 });
 
 // ========== 头像上传 ==========
-const AVATARS_DIR = path.join(__dirname, "../uploads/avatars");
+const AVATARS_DIR = path.join(UPLOADS_BASE, "avatars");
 if (!fs.existsSync(AVATARS_DIR)) {
   fs.mkdirSync(AVATARS_DIR, { recursive: true });
 }
@@ -2025,6 +2028,17 @@ app.post("/api/test-connection", async (req, res) => {
     res.json({ ok: false, error: msg });
   }
 });
+
+// 桌面模式：托管前端构建产物（frontend/dist），让 Electron 窗口通过后端单端口访问
+const FRONTEND_DIST = path.join(__dirname, "../../frontend/dist");
+if (fs.existsSync(FRONTEND_DIST)) {
+  app.use(express.static(FRONTEND_DIST));
+  app.get("*", (req, res) => {
+    if (!req.path.startsWith("/api")) {
+      res.sendFile(path.join(FRONTEND_DIST, "index.html"));
+    }
+  });
+}
 
 app.listen(PORT, () => {
   console.log(`✅ 后端服务已启动: http://localhost:${PORT}`);

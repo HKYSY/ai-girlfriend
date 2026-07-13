@@ -147,7 +147,9 @@ import path from "path";
 import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const BACKUP_DIR = path.join(__dirname, "../data/backup");
+const BACKUP_DIR = process.env.APP_DATA_DIR
+  ? path.join(process.env.APP_DATA_DIR, "data/backup")
+  : path.join(__dirname, "../data/backup");
 const MAX_BACKUPS = 50;
 fs.mkdirSync(BACKUP_DIR, { recursive: true });
 

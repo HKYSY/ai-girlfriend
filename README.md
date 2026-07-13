@@ -1,6 +1,7 @@
-# AI 女友 💕
+# 虚拟伴侣 💕
 
 > 基于 Live2D 虚拟形象 + 大语言模型的桌面端 Web 应用——"有情感记忆的虚拟伴侣"。
+> 支持 **浏览器开发模式** 和 **Electron 桌面应用** 双形态运行。
 
 她记得你说过的话，会因为你开心而开心，也会因为你冷落她而撒娇生气——不只是一个聊天框，而是一个会成长、会写日记、会陪你玩游戏的虚拟伴侣。
 
@@ -62,6 +63,7 @@
 |----|------|
 | 前端 | React 18 + TypeScript + Vite + PixiJS + pixi-live2d-display-mulmotion + Ant Design + Recharts |
 | 后端 | Express + TypeScript + better-sqlite3 + multer + node-7z |
+| 桌面端 | Electron 31 + electron-builder（NSIS 安装包） |
 | AI | DeepSeek API（OpenAI 兼容格式，SSE 流式），支持角色级自定义服务商 |
 | 数据 | SQLite（WAL 模式）+ JSON 备份快照 |
 | 设计 | OKLCH 色彩系统 + CSS 变量 tokens + 深色星空主题 |
@@ -91,6 +93,27 @@ npm run dev               # 启动前端（Vite，端口 5173）
 
 浏览器打开 `http://localhost:5173` 即可使用。
 
+### 🖥 桌面应用打包（Electron）
+
+除了浏览器开发模式，还支持打包成 Windows 桌面应用（.exe），双击即可运行，无需安装 Node.js。
+
+```bash
+# 根目录安装依赖（Electron 工具链 + 后端依赖提升）
+npm install
+
+# 打包桌面应用（生成 out/win-unpacked/虚拟伴侣.exe，用于测试）
+npm run electron:build
+
+# 打包 NSIS 安装包（生成 out/虚拟伴侣 Setup.exe，用于发布）
+npm run electron:dist
+```
+
+**关键设计**：
+- 打包后 native 模块（better-sqlite3）自动 rebuild 为 Electron ABI，打包完自动恢复 Node ABI，**开发模式 `npm run dev` 永远不受影响**
+- 桌面版数据存储在系统 userData 目录（`%AppData%/虚拟伴侣/`），与开发模式数据隔离
+- 启动日志写在 `%AppData%/virtual-companion/main.log`，方便排查问题
+- 自定义图标放在 `build/icon.ico`
+
 ### 环境变量
 
 | 变量 | 位置 | 必填 | 说明 |
@@ -106,7 +129,7 @@ npm run dev               # 启动前端（Vite，端口 5173）
 ## 📁 目录结构
 
 ```
-AI女友/
+虚拟伴侣/
 ├── backend/
 │   ├── src/
 │   │   ├── index.ts          # API 路由 + SSE 流式聊天 + 日记/事实/摘要生成
@@ -125,6 +148,11 @@ AI女友/
 │   │   ├── settings.css      # 设置页样式
 │   │   └── App.tsx           # 主编排组件
 │   └── public/live2d/        # 预设 Live2D 模型
+├── electron/
+│   └── main.mjs              # Electron 主进程（后端启动 + 窗口管理 + 错误处理）
+├── build/
+│   └── icon.ico              # 应用图标
+├── package.json              # 根配置（Electron + 后端依赖提升 + 构建脚本）
 └── 项目立项文档.md            # 详细设计文档
 ```
 
@@ -169,6 +197,7 @@ AI女友/
 
 - **v1.1**：SQLite 迁移 + Token 优化 + 日记重构 + AI 模型自定义 + impeccable 设计系统
 - **v1.2**：设置页 5 模块重构 + 聊天外观自定义 + 沉浸式动效 + 头像系统 + 数据管理升级 + 时区修复
+- **v1.3**：Electron 桌面化 + 自定义图标 + native 模块 ABI 隔离 + 端口冲突处理 + 前端 dist 托管
 
 ---
 

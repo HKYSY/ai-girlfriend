@@ -1,0 +1,53 @@
+{
+  "name": "virtual-companion",
+  "version": "1.2.0",
+  "private": true,
+  "description": "虚拟伴侣 - Live2D + LLM 桌面应用",
+  "main": "electron/main.mjs",
+  "scripts": {
+    "electron:dev": "cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron electron/main.mjs",
+    "build:frontend": "cd frontend && npm run build",
+    "build:backend": "cd backend && npm run build",
+    "rebuild:native": "npx @electron/rebuild -f -w better-sqlite3 --electron-version 31.7.7",
+    "restore:native": "cd node_modules/better-sqlite3 && node ../prebuild-install/bin.js --runtime=node",
+    "electron:build": "npm run build:frontend && npm run build:backend && npm run rebuild:native && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir && npm run restore:native",
+    "electron:dist": "npm run build:frontend && npm run build:backend && npm run rebuild:native && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder && npm run restore:native"
+  },
+  "build": {
+    "appId": "com.companion.app",
+    "productName": "虚拟伴侣",
+    "files": [
+      "electron/main.mjs",
+      "backend/dist/**",
+      "backend/package.json",
+      "frontend/dist/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "**/better-sqlite3/**",
+      "**/7zip-bin/**"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    },
+    "directories": {
+      "output": "out"
+    }
+  },
+  "dependencies": {
+    "7zip-bin": "^5.2.0",
+    "better-sqlite3": "^12.11.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "multer": "^2.2.0",
+    "node-7z": "^3.0.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.6.0",
+    "cross-env": "^7.0.3",
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  }
+}

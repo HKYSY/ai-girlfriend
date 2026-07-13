@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { Button, Typography, Input, message, Spin, Empty } from "antd";
-import { Upload as UploadIcon, Trash2, Boxes, Sparkles, FileBox } from "lucide-react";
+import { Upload as UploadIcon, Trash2, Boxes, FileBox } from "lucide-react";
 import { getModels, getPresetModels, uploadModel, deleteModel, updateCharacter } from "../api";
 import type { Character, Live2DModelInfo, PresetModel } from "../api";
 
@@ -44,8 +44,6 @@ export default function SettingsAppearance({ character, onUpdated }: Props) {
     if (p) return p.format === "cubism4" ? "Cubism 4" : "Cubism 2";
     return models.some((m) => m.modelUrl === selectedUrl) ? "Cubism 4" : "";
   };
-
-  const isPreset = (url: string) => presets.some((m) => m.modelUrl === url);
 
   const selectModel = async (url: string) => {
     setSelectedUrl(url);

@@ -44,7 +44,6 @@ export default function SettingsAIModel({ character, onUpdated }: Props) {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; latency?: number; error?: string } | null>(null);
 
-  const hasConfig = !!(apiKey.trim() || apiModel.trim());
   const usingEnv = !apiKey.trim();
   const preset = PROVIDER_PRESETS[provider] || PROVIDER_PRESETS.custom;
 
