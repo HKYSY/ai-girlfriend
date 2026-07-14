@@ -5,6 +5,11 @@ import { User, ArrowUp } from "lucide-react";
 export interface Message {
   role: "user" | "assistant";
   content: string;
+  sticker?: {
+    id: number;
+    url: string;
+    category: string;
+  };
 }
 
 interface Props {
@@ -82,6 +87,18 @@ export default function ChatWindow({ messages, loading, characterName, character
           {msg.role === "user" && renderUserAvatar()}
           <div className={`message ${msg.role}`}>
             {msg.role === "assistant" ? cleanAssistantText(msg.content) : msg.content}
+            {msg.sticker && (
+              <div className="message-sticker">
+                <img
+                  src={msg.sticker.url}
+                  alt={msg.sticker.category}
+                  className="sticker-img"
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).style.display = "none";
+                  }}
+                />
+              </div>
+            )}
           </div>
         </div>
       ))}

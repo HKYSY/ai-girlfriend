@@ -27,7 +27,7 @@ import {
 import type { Character, ConversationData } from "./storage.js";
 import { mergeDiaryEntries, parseMarkers } from "./utils.js";
 import type { DiaryEntry } from "./utils.js";
-import { migrateFromJSON, dbPetState, dbMoodHistory, dbDiary, dbMessages, dbFacts, dbConvMeta, localDateStr } from "./database.js";
+import { migrateFromJSON, dbPetState, dbMoodHistory, dbDiary, dbMessages, dbFacts, dbConvMeta, dbStickers, dbMessageStickers, localDateStr, initStickers } from "./database.js";
 import type { DBMessage, DBCharacter } from "./database.js";
 
 dotenv.config();
@@ -134,6 +134,12 @@ const UPLOADS_BASE = process.env.APP_DATA_DIR
   ? path.join(process.env.APP_DATA_DIR, "uploads")
   : path.join(__dirname, "../uploads");
 const UPLOADS_DIR = path.join(UPLOADS_BASE, "live2d");
+
+// 数据目录（与 database.ts 保持一致）
+const DATA_DIR = process.env.APP_DATA_DIR
+  ? path.join(process.env.APP_DATA_DIR, "data")
+  : path.join(__dirname, "../data");
+
 if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 }
@@ -706,7 +712,37 @@ app.post("/api/chat", async (req, res) => {
 
     // 保存对话 — 数据库永久保留
     dbMessages.addUser(characterId, message);
-    dbMessages.addAssistant(characterId, reply);
+    const msgResult = dbMessages.addAssistant(characterId, reply);
+    const messageId = msgResult.lastInsertRowid as number;
+
+    // AI自动匹配表情包（根据emotion标签）
+    if (effectiveEmotion && !clientClosed) {
+      const matchedStickers = dbStickers.getByEmotion(effectiveEmotion);
+      if (matchedStickers.length > 0) {
+        // 随机选择一个表情包（优先使用次数少的）
+        const sorted = matchedStickers.sort((a, b) => a.usageCount - b.usageCount);
+        const top3 = sorted.slice(0, Math.min(3, sorted.length));
+        const selected = top3[Math.floor(Math.random() * top3.length)];
+
+        // 增加使用次数
+        dbStickers.incrementUsage(selected.id);
+
+        // 保存消息-表情包关联
+        dbMessageStickers.add(messageId, selected.id);
+
+        // 发送表情包给前端
+        sseSend(res, {
+          type: "sticker",
+          sticker: {
+            id: selected.id,
+            url: `/stickers/${selected.filename}`,
+            category: selected.category
+          }
+        });
+
+        console.log(`[chat] AI发送表情包: id=${selected.id}, category=${selected.category}, emotion=${effectiveEmotion}`);
+      }
+    }
     // 内存中的 convData 用于上下文（限制长度不影响数据库）
     convData.messages.push({ role: "user", content: message });
     convData.messages.push({ role: "assistant", content: reply });
@@ -2121,8 +2157,138 @@ if (fs.existsSync(FRONTEND_DIST)) {
   });
 }
 
+// ========== 表情包管理 ==========
+// 获取所有表情包
+app.get("/api/stickers", (_req, res) => {
+  try {
+    const stickers = dbStickers.getAll();
+    res.json({ ok: true, stickers });
+  } catch (e: any) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// 按分类获取表情包
+app.get("/api/stickers/category/:category", (req, res) => {
+  try {
+    const { category } = req.params;
+    const stickers = dbStickers.getByCategory(category);
+    res.json({ ok: true, stickers });
+  } catch (e: any) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// 搜索表情包
+app.get("/api/stickers/search/:keyword", (req, res) => {
+  try {
+    const { keyword } = req.params;
+    const stickers = dbStickers.search(keyword);
+    res.json({ ok: true, stickers });
+  } catch (e: any) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// 配置表情包上传中间件
+const stickerUpload = multer({ dest: path.join(DATA_DIR, "stickers/temp") });
+
+// 上传表情包
+app.post("/api/stickers/upload", stickerUpload.single("sticker"), (req, res) => {
+  try {
+    if (!req.file) {
+      return res.json({ ok: false, error: "未上传文件" });
+    }
+
+    const { category, keywords, emotionMatch } = req.body;
+    const ext = path.extname(req.file.originalname) || ".png";
+    const filename = `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
+    const stickerDir = path.join(DATA_DIR, "stickers");
+
+    if (!fs.existsSync(stickerDir)) {
+      fs.mkdirSync(stickerDir, { recursive: true });
+    }
+
+    const finalPath = path.join(stickerDir, filename);
+    fs.renameSync(req.file.path, finalPath);
+
+    const id = dbStickers.add({
+      filename,
+      category: category || "general",
+      keywords: keywords || "[]",
+      emotionMatch: emotionMatch || "",
+    });
+
+    res.json({ ok: true, id, filename, path: `/stickers/${filename}` });
+  } catch (e: any) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// 删除表情包
+app.delete("/api/stickers/:id", (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const sticker = dbStickers.getById(id);
+    if (!sticker) {
+      return res.json({ ok: false, error: "表情包不存在" });
+    }
+
+    // 删除文件
+    const filePath = path.join(DATA_DIR, "stickers", sticker.filename);
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+
+    // 删除数据库记录
+    const deleted = dbStickers.delete(id);
+    res.json({ ok: deleted, message: deleted ? "删除成功" : "删除失败" });
+  } catch (e: any) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// 用户发送表情包
+app.post("/api/send-sticker", (req, res) => {
+  try {
+    const { characterId, stickerId } = req.body;
+    if (!characterId || !stickerId) {
+      return res.json({ ok: false, error: "缺少参数" });
+    }
+
+    // 验证表情包存在
+    const sticker = dbStickers.getById(stickerId);
+    if (!sticker) {
+      return res.json({ ok: false, error: "表情包不存在" });
+    }
+
+    // 保存用户消息（表情包）
+    const messageId = dbMessages.add({
+      characterId,
+      role: "user",
+      content: `[表情包:${sticker.category}]`,
+    });
+
+    // 关联表情包到消息
+    dbMessageStickers.add(messageId, stickerId);
+
+    // 更新表情包使用次数
+    dbStickers.incrementUsage(stickerId);
+
+    res.json({ ok: true, messageId });
+  } catch (e: any) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// 表情包静态文件服务
+app.use("/stickers", express.static(path.join(DATA_DIR, "stickers")));
+
 app.listen(PORT, () => {
   console.log(`✅ 后端服务已启动: http://localhost:${PORT}`);
   console.log(`   默认模型: ${DEFAULT_MODEL}`);
   console.log(`   数据库路径: data/app.db`);
+
+  // 初始化表情包数据
+  initStickers();
 });

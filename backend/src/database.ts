@@ -116,6 +116,23 @@ export interface DBDiaryEntry {
   createdAt: string;
 }
 
+export interface DBSticker {
+  id: number;
+  filename: string;
+  category: string;
+  keywords: string;
+  emotionMatch: string;
+  usageCount: number;
+  createdAt: string;
+}
+
+export interface DBMessageSticker {
+  id: number;
+  messageId: number;
+  stickerId: number;
+  createdAt: string;
+}
+
 // 本地日期字符串 YYYY-MM-DD（避免 toISOString 的 UTC 偏移导致日期错位）
 export function localDateStr(d: Date = new Date()): string {
   const y = d.getFullYear();
@@ -246,6 +263,28 @@ export function initDatabase(): void {
       FOREIGN KEY (characterId) REFERENCES characters(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_diary_char ON diary(characterId);
+
+    CREATE TABLE IF NOT EXISTS stickers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      filename TEXT NOT NULL,
+      category TEXT NOT NULL,
+      keywords TEXT DEFAULT '[]',
+      emotionMatch TEXT DEFAULT '',
+      usageCount INTEGER DEFAULT 0,
+      createdAt TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_stickers_category ON stickers(category);
+    CREATE INDEX IF NOT EXISTS idx_stickers_emotion ON stickers(emotionMatch);
+
+    CREATE TABLE IF NOT EXISTS message_stickers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      messageId INTEGER NOT NULL,
+      stickerId INTEGER NOT NULL,
+      createdAt TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (messageId) REFERENCES messages(id) ON DELETE CASCADE,
+      FOREIGN KEY (stickerId) REFERENCES stickers(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_msg_stickers_msg ON message_stickers(messageId);
   `);
 
   console.log("[db] 数据库初始化完成:", DB_PATH);
@@ -565,6 +604,44 @@ export const dbDiary = {
   },
 };
 
+// ========== 表情包操作 ==========
+export const dbStickers = {
+  getAll: () => db.prepare("SELECT * FROM stickers ORDER BY category, createdAt").all() as DBSticker[],
+  getByCategory: (category: string) => db.prepare("SELECT * FROM stickers WHERE category = ? ORDER BY usageCount DESC").all(category) as DBSticker[],
+  getByEmotion: (emotion: string) => db.prepare("SELECT * FROM stickers WHERE emotionMatch = ? ORDER BY usageCount DESC").all(emotion) as DBSticker[],
+  search: (keyword: string) => db.prepare("SELECT * FROM stickers WHERE keywords LIKE ? ORDER BY usageCount DESC").all(`%${keyword}%`) as DBSticker[],
+  getById: (id: number) => db.prepare("SELECT * FROM stickers WHERE id = ?").get(id) as DBSticker | undefined,
+  add: (sticker: Omit<DBSticker, "id" | "usageCount" | "createdAt">) => {
+    const result = db.prepare("INSERT INTO stickers (filename, category, keywords, emotionMatch) VALUES (?, ?, ?, ?)")
+      .run(sticker.filename, sticker.category, sticker.keywords, sticker.emotionMatch);
+    return result.lastInsertRowid as number;
+  },
+  incrementUsage: (id: number) => {
+    db.prepare("UPDATE stickers SET usageCount = usageCount + 1 WHERE id = ?").run(id);
+  },
+  delete: (id: number) => {
+    const result = db.prepare("DELETE FROM stickers WHERE id = ?").run(id);
+    return result.changes > 0;
+  },
+};
+
+// ========== 消息-表情包关联 ==========
+export const dbMessageStickers = {
+  add: (messageId: number, stickerId: number) => {
+    db.prepare("INSERT INTO message_stickers (messageId, stickerId) VALUES (?, ?)").run(messageId, stickerId);
+  },
+  getByMessage: (messageId: number) => {
+    return db.prepare(`
+      SELECT s.* FROM stickers s
+      JOIN message_stickers ms ON s.id = ms.stickerId
+      WHERE ms.messageId = ?
+    `).all(messageId) as DBSticker[];
+  },
+  deleteByMessage: (messageId: number) => {
+    db.prepare("DELETE FROM message_stickers WHERE messageId = ?").run(messageId);
+  },
+};
+
 // 导出数据库连接（供事务等高级操作）
 export { db };
 
@@ -574,3 +651,69 @@ initDatabase();
 try { db.exec("ALTER TABLE characters ADD COLUMN avatarUrl TEXT DEFAULT ''"); } catch { /* 列已存在 */ }
 // 规范化历史消息时间戳（修复时区格式，使日记按本地日期正确归属）
 normalizeMessageTimestamps();
+
+// ========== 表情包初始化 ==========
+export function initStickers(): void {
+  const stickerDir = path.join(DATA_DIR, "stickers");
+  if (!fs.existsSync(stickerDir)) {
+    fs.mkdirSync(stickerDir, { recursive: true });
+    console.log(`[db] 创建表情包目录: ${stickerDir}`);
+  }
+
+  // 检查是否已有表情包数据
+  const count = db.prepare("SELECT COUNT(*) as cnt FROM stickers").get() as { cnt: number };
+  if (count.cnt > 0) {
+    console.log(`[db] 表情包数据库已有 ${count.cnt} 条数据，跳过初始化`);
+    return;
+  }
+
+  console.log("[db] 初始化表情包数据...");
+
+  // 初始表情包分类和关键词
+  const initialStickers = [
+    // 开心类
+    { category: "happy", keywords: ["开心", "高兴", "哈哈", "笑"], emotionMatch: "开心" },
+    { category: "happy", keywords: ["耶", "太好了", "棒", "赞"], emotionMatch: "开心" },
+    { category: "happy", keywords: ["嘻嘻", "嘿嘿", "乐", "喜"], emotionMatch: "开心" },
+
+    // 生气类
+    { category: "angry", keywords: ["生气", "愤怒", "哼", "气"], emotionMatch: "生气" },
+    { category: "angry", keywords: ["讨厌", "烦", "讨厌", "滚"], emotionMatch: "生气" },
+    { category: "angry", keywords: ["不爽", "讨厌", "生气", "哼"], emotionMatch: "生气" },
+
+    // 撒娇类
+    { category: "cute", keywords: ["撒娇", "哼", "讨厌", "嘛"], emotionMatch: "撒娇" },
+    { category: "cute", keywords: ["唔", "呜", "求", "拜托"], emotionMatch: "撒娇" },
+    { category: "cute", keywords: ["亲爱的", "宝贝", "亲亲", "抱抱"], emotionMatch: "撒娇" },
+
+    // 疑惑类
+    { category: "confused", keywords: ["？", "啊", "咦", "诶"], emotionMatch: "疑惑" },
+    { category: "confused", keywords: ["什么", "为什么", "怎么会", "哈"], emotionMatch: "疑惑" },
+    { category: "confused", keywords: ["不懂", "不明白", "困惑", "迷茫"], emotionMatch: "疑惑" },
+
+    // 难过类
+    { category: "sad", keywords: ["难过", "伤心", "哭", "呜呜"], emotionMatch: "难过" },
+    { category: "sad", keywords: ["不开心", "委屈", "难受", "心痛"], emotionMatch: "难过" },
+    { category: "sad", keywords: ["想念", "怀念", "思", "念"], emotionMatch: "难过" },
+
+    // 通用类
+    { category: "general", keywords: ["好的", "嗯", "哦", "啊"], emotionMatch: "" },
+    { category: "general", keywords: ["明白", "知道", "懂", "了解"], emotionMatch: "" },
+    { category: "general", keywords: ["谢谢", "感谢", "多谢", "谢"], emotionMatch: "" },
+  ];
+
+  const insert = db.prepare("INSERT INTO stickers (filename, category, keywords, emotionMatch) VALUES (?, ?, ?, ?)");
+  const batch = db.transaction(() => {
+    for (const s of initialStickers) {
+      insert.run(
+        `placeholder_${Date.now()}_${Math.random().toString(36).slice(2)}.png`,
+        s.category,
+        JSON.stringify(s.keywords),
+        s.emotionMatch
+      );
+    }
+  });
+
+  batch();
+  console.log(`[db] 初始化 ${initialStickers.length} 条表情包占位数据（需上传实际图片）`);
+}

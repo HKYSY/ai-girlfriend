@@ -144,6 +144,7 @@ export interface StreamCallbacks {
   onDone: () => void;
   onError: (error: string) => void;
   onPetState?: (petState: PetState, coinReward?: number) => void;
+  onSticker?: (sticker: { id: number; url: string; category: string }) => void;
 }
 
 // ========== 通用 SSE 消费函数 ==========
@@ -183,6 +184,7 @@ async function consumeSSE(
           error?: string;
           petState?: PetState;
           coinReward?: number;
+          sticker?: { id: number; url: string; category: string };
         };
         switch (data.type) {
           case "mood":
@@ -193,6 +195,9 @@ async function consumeSSE(
             break;
           case "text":
             if (data.text) callbacks.onText(data.text);
+            break;
+          case "sticker":
+            if (data.sticker && callbacks.onSticker) callbacks.onSticker(data.sticker);
             break;
           case "petState":
             if (data.petState && callbacks.onPetState) callbacks.onPetState(data.petState, data.coinReward);
@@ -704,6 +709,42 @@ export async function uploadAvatar(file: File): Promise<{ ok: boolean; url: stri
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || `上传失败 (${res.status})`);
+  }
+  return res.json();
+}
+
+// ========== 表情包系统 ==========
+export interface Sticker {
+  id: number;
+  filename: string;
+  category: string;
+  keywords: string;
+  emotionMatch: string;
+  usageCount: number;
+  createdAt: string;
+}
+
+// 获取表情包列表
+export async function getStickers(category?: string): Promise<{ ok: boolean; stickers: Sticker[] }> {
+  const url = category ? `/api/stickers/category/${category}` : "/api/stickers";
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) throw new Error("获取表情包失败");
+  return res.json();
+}
+
+// 用户发送表情包（保存到消息记录）
+export async function sendStickerMessage(
+  characterId: string,
+  stickerId: number
+): Promise<{ ok: boolean; messageId: number }> {
+  const res = await fetch("/api/send-sticker", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ characterId, stickerId }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || "发送表情包失败");
   }
   return res.json();
 }

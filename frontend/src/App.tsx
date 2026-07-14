@@ -22,8 +22,9 @@ import {
   backfillDiaries,
   getMessages,
   extractFacts,
+  sendStickerMessage,
 } from "./api";
-import type { Character, PetState } from "./api";
+import type { Character, PetState, Sticker } from "./api";
 import { moodToEmoji } from "./utils";
 import {
   getStoredTheme,
@@ -388,6 +389,19 @@ export default function App() {
             console.log(`[pet] 聊天奖励 ${coinReward} 金币`);
           }
         },
+        onSticker: (sticker) => {
+          // AI发送表情包：添加到最后一条AI消息
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last && last.role === "assistant") {
+              return [
+                ...prev.slice(0, -1),
+                { ...last, sticker },
+              ];
+            }
+            return prev;
+          });
+        },
         onDone: () => setLoading(false),
         onError: (err) => {
           setLoading(false);
@@ -405,6 +419,36 @@ export default function App() {
           { role: "assistant", content: "（网络开小差了，再说一次好吗～）" },
         ]);
       }
+    }
+  };
+
+  // ========== 发送表情包 ==========
+  const handleSendSticker = async (sticker: Sticker) => {
+    if (!currentCharacter) return;
+
+    // 重置定时器状态
+    lastActivityRef.current = Date.now();
+    proactiveActiveRef.current = false;
+
+    // 添加用户表情包消息到界面
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "user",
+        content: "",
+        sticker: {
+          id: sticker.id,
+          url: `/stickers/${sticker.filename}`,
+          category: sticker.category,
+        },
+      },
+    ]);
+
+    // 保存到数据库
+    try {
+      await sendStickerMessage(currentCharacter.id, sticker.id);
+    } catch (error) {
+      console.error("发送表情包失败:", error);
     }
   };
 
@@ -817,7 +861,7 @@ export default function App() {
           loadingMore={loadingMore}
           onLoadMore={handleLoadMore}
         />
-        <ChatInput onSend={handleSend} disabled={loading || !currentCharacter} />
+        <ChatInput onSend={handleSend} onSendSticker={handleSendSticker} disabled={loading || !currentCharacter} />
       </div>
 
       {settingsOpen && currentCharacter && (

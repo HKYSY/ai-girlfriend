@@ -1,17 +1,30 @@
 import { useState, KeyboardEvent } from "react";
 import { Input, Button } from "antd";
-import { Send } from "lucide-react";
+import { Send, Smile } from "lucide-react";
+import { StickerPanel } from "./StickerPanel";
 
 const { TextArea } = Input;
 
+interface Sticker {
+  id: number;
+  filename: string;
+  category: string;
+  keywords: string;
+  emotionMatch: string;
+  usageCount: number;
+  createdAt: string;
+}
+
 interface Props {
   onSend: (message: string) => void;
+  onSendSticker?: (sticker: Sticker) => void;
   disabled: boolean;
 }
 
-export default function ChatInput({ onSend, disabled }: Props) {
+export default function ChatInput({ onSend, onSendSticker, disabled }: Props) {
   const [text, setText] = useState("");
   const [particles, setParticles] = useState<{ id: number; x: number }[]>([]);
+  const [showStickers, setShowStickers] = useState(false);
 
   const handleSend = () => {
     const trimmed = text.trim();
@@ -34,6 +47,26 @@ export default function ChatInput({ onSend, disabled }: Props) {
 
   return (
     <div className="chat-input">
+      {showStickers && onSendSticker && (
+        <StickerPanel
+          onSend={(sticker) => {
+            onSendSticker(sticker);
+            setShowStickers(false);
+          }}
+          onClose={() => setShowStickers(false)}
+        />
+      )}
+      <div className="input-actions">
+        <Button
+          type="text"
+          size="large"
+          icon={<Smile size={18} />}
+          onClick={() => setShowStickers(!showStickers)}
+          disabled={disabled}
+          title="表情包"
+          className="sticker-btn"
+        />
+      </div>
       <TextArea
         value={text}
         placeholder="跟她说点什么…"
