@@ -715,32 +715,50 @@ app.post("/api/chat", async (req, res) => {
     const msgResult = dbMessages.addAssistant(characterId, reply);
     const messageId = msgResult.lastInsertRowid as number;
 
-    // AI自动匹配表情包（根据emotion标签）
+    // AI自动匹配表情包（根据emotion标签，按概率发送避免每条都发）
     if (effectiveEmotion && !clientClosed) {
       const matchedStickers = dbStickers.getByEmotion(effectiveEmotion);
       if (matchedStickers.length > 0) {
-        // 随机选择一个表情包（优先使用次数少的）
-        const sorted = matchedStickers.sort((a, b) => a.usageCount - b.usageCount);
-        const top3 = sorted.slice(0, Math.min(3, sorted.length));
-        const selected = top3[Math.floor(Math.random() * top3.length)];
+        // 概率控制：35% 基础概率 + 连续发会降低
+        const lastStickerAt = (convData as any).lastStickerAt ? new Date((convData as any).lastStickerAt).getTime() : 0;
+        const lastUserMsgAt = (convData.messages[convData.messages.length - 2] as any)?.createdAt
+          ? new Date((convData.messages[convData.messages.length - 2] as any).createdAt).getTime()
+          : 0;
+        // 距离上次发表情包越近，概率越低
+        const minutesSinceLastSticker = lastStickerAt ? (Date.now() - lastStickerAt) / 60000 : 999;
+        const minutesSinceLastUser = lastUserMsgAt ? (Date.now() - lastUserMsgAt) / 60000 : 999;
 
-        // 增加使用次数
-        dbStickers.incrementUsage(selected.id);
+        let prob = 0.35;  // 基础 35%
+        if (minutesSinceLastSticker < 2) prob = 0.10;  // 2 分钟内发过 → 10%
+        else if (minutesSinceLastSticker < 5) prob = 0.20;  // 5 分钟内 → 20%
+        if (minutesSinceLastUser < 1) prob *= 0.5;  // 用户刚发完 1 分钟内 → 再砍半
+        if (reply.length < 10) prob = 0;  // 短回复不发表情包
 
-        // 保存消息-表情包关联
-        dbMessageStickers.add(messageId, selected.id);
+        const dice = Math.random();
+        if (dice < prob) {
+          // 随机选择一个表情包（优先使用次数少的）
+          const sorted = matchedStickers.sort((a, b) => a.usageCount - b.usageCount);
+          const top3 = sorted.slice(0, Math.min(3, sorted.length));
+          const selected = top3[Math.floor(Math.random() * top3.length)];
 
-        // 发送表情包给前端
-        sseSend(res, {
-          type: "sticker",
-          sticker: {
-            id: selected.id,
-            url: `/stickers/${selected.filename}`,
-            category: selected.category
-          }
-        });
+          // 增加使用次数
+          dbStickers.incrementUsage(selected.id);
+          dbMessageStickers.add(messageId, selected.id);
+          (convData as any).lastStickerAt = new Date().toISOString();
 
-        console.log(`[chat] AI发送表情包: id=${selected.id}, category=${selected.category}, emotion=${effectiveEmotion}`);
+          sseSend(res, {
+            type: "sticker",
+            sticker: {
+              id: selected.id,
+              url: `/stickers/${selected.filename}`,
+              category: selected.category
+            }
+          });
+
+          console.log(`[chat] AI发送表情包: id=${selected.id}, emotion=${effectiveEmotion}, prob=${prob.toFixed(2)}, dice=${dice.toFixed(2)}`);
+        } else {
+          console.log(`[chat] AI跳过表情包: emotion=${effectiveEmotion}, prob=${prob.toFixed(2)}, dice=${dice.toFixed(2)} (未达阈值)`);
+        }
       }
     }
     // 内存中的 convData 用于上下文（限制长度不影响数据库）
@@ -1033,35 +1051,112 @@ ${recentDialog || "（无对话记录）"}
 
 请写下昨天的日记（${wordLimit}）：`;
 
-  try {
+  // 清理对话内容中的特殊字符（防止 JSON 序列化/DeepSeek 解析失败导致 400）
+  const sanitize = (s: string): string => {
+    if (!s) return "";
+    // 移除控制字符（保留换行 \n 和制表符 \t）
+    return s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "").trim();
+  };
+
+  const cleanDialog = sanitize(recentDialog);
+  const cleanUserPrompt = `日期：${dateStr}（现在是${now.toISOString().slice(0, 10)}的${timeStr}，你在回顾昨天的事）
+对话数量：${msgCount}条
+当前心情：${moodLevel.label}（${character.mood}/100）
+
+昨天的对话记录：
+${cleanDialog || "（无对话记录）"}
+
+请写下昨天的日记（${wordLimit}）：`;
+
+  // 推理模型（deepseek-v4 / r1 等）需要更多 max_tokens 给 reasoning_content
+  // 否则 reasoning 用完后 content 没空间生成，可能 400 或被截断
+  const isReasoningModel = /v4|r1|reason/i.test(api.model);
+  const maxTokens = isReasoningModel ? 6000 : 1500;
+
+  // 调用 DeepSeek（带 1 次重试，400/500 错误时清理 prompt 后重试）
+  const callDeepSeek = async (): Promise<string | null> => {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 120000);
-    const response = await fetch(api.url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${api.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: api.model,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-        stream: false,
-        max_tokens: 1500,
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
+    try {
+      const response = await fetch(api.url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${api.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: api.model,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: cleanUserPrompt },
+          ],
+          stream: false,
+          max_tokens: maxTokens,
+        }),
+        signal: controller.signal,
+      });
 
-    if (!response.ok) {
-      console.error("[diary] DeepSeek 调用失败:", response.status);
+      if (!response.ok) {
+        // 关键：打印响应体才能看到 DeepSeek 返回的具体错误（如 context length / invalid messages）
+        const errBody = await response.text().catch(() => "(无法读取响应体)");
+        console.error(`[diary] DeepSeek 调用失败: HTTP ${response.status}`);
+        console.error(`[diary] 响应体: ${errBody.slice(0, 500)}`);
+        console.error(`[diary] model=${api.model}, max_tokens=${maxTokens}, msgCount=${msgCount}, dialogLen=${cleanDialog.length}`);
+        return null;
+      }
+
+      const data = await response.json();
+      const content = data.choices?.[0]?.message?.content;
+      if (!content || typeof content !== "string") {
+        console.error("[diary] DeepSeek 返回内容为空:", JSON.stringify(data).slice(0, 300));
+        return null;
+      }
+      return content;
+    } catch (e: any) {
+      if (e.name === "AbortError") {
+        console.error("[diary] DeepSeek 调用超时（120s）");
+      } else {
+        console.error("[diary] DeepSeek 调用异常:", e.message);
+      }
       return null;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  };
+
+  try {
+    let content = await callDeepSeek();
+
+    // 首次失败时，缩短对话记录重试一次（防止 context length 超限）
+    if (!content && msgCount > 10) {
+      console.log("[diary] 首次失败，缩短对话记录重试...");
+      const shortDialog = cleanDialog.split("\n").slice(-10).join("\n");
+      const shortPrompt = cleanUserPrompt.replace(cleanDialog, shortDialog);
+      const retryController = new AbortController();
+      const retryTimeout = setTimeout(() => retryController.abort(), 120000);
+      try {
+        const retryRes = await fetch(api.url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${api.apiKey}` },
+          body: JSON.stringify({
+            model: api.model,
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: shortPrompt },
+            ],
+            stream: false,
+            max_tokens: maxTokens,
+          }),
+          signal: retryController.signal,
+        });
+        if (retryRes.ok) {
+          const data = await retryRes.json();
+          content = data.choices?.[0]?.message?.content;
+        }
+      } catch (e) { /* 忽略重试失败 */ }
+      clearTimeout(retryTimeout);
     }
 
-    const data = await response.json();
-    const content = data.choices?.[0]?.message?.content;
     if (!content || typeof content !== "string") return null;
 
     // 写入数据库
@@ -2150,18 +2245,58 @@ app.post("/api/test-connection", async (req, res) => {
 const FRONTEND_DIST = path.join(__dirname, "../../frontend/dist");
 if (fs.existsSync(FRONTEND_DIST)) {
   app.use(express.static(FRONTEND_DIST));
-  app.get("*", (req, res) => {
+  // 表情包静态文件服务（必须在 app.get("*") 之前注册，否则会被通配路由拦截返回 index.html）
+  // 拒绝访问 temp 子目录，避免临时文件被直接访问
+  app.use("/stickers", (req, res, next) => {
+    const p = decodeURIComponent(req.path || "");
+    if (p.startsWith("/temp") || p.includes("/temp/")) {
+      return res.status(403).json({ error: "禁止访问临时目录" });
+    }
+    next();
+  }, express.static(path.join(DATA_DIR, "stickers")));
+  app.get("*", (req, res, next) => {
     if (!req.path.startsWith("/api")) {
       res.sendFile(path.join(FRONTEND_DIST, "index.html"));
+    } else {
+      next();
     }
   });
+} else {
+  // dev 模式：也注册 stickers 静态服务（如果用户用其他端口访问后端）
+  app.use("/stickers", (req, res, next) => {
+    const p = decodeURIComponent(req.path || "");
+    if (p.startsWith("/temp") || p.includes("/temp/")) {
+      return res.status(403).json({ error: "禁止访问临时目录" });
+    }
+    next();
+  }, express.static(path.join(DATA_DIR, "stickers")));
 }
 
 // ========== 表情包管理 ==========
-// 获取所有表情包
-app.get("/api/stickers", (_req, res) => {
+// 获取表情包列表（支持分页 + 分类过滤，按使用次数倒序）
+app.get("/api/stickers", (req, res) => {
   try {
-    const stickers = dbStickers.getAll();
+    const category = (req.query.category as string) || "all";
+    // 用最简单的 SELECT 避免复杂查询卡住，内存过滤+排序
+    let stickers = db.prepare("SELECT * FROM stickers").all() as any[];
+    if (category !== "all") {
+      stickers = stickers.filter((s) => s.category === category);
+    }
+    stickers.sort((a, b) => b.usageCount - a.usageCount);
+    const total = stickers.length;
+    res.json({ ok: true, stickers, total, hasMore: false });
+  } catch (e: any) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// 最近使用的表情包（QQ 风格面板的"最近"区域用），返回使用过且次数高的前 N 个
+app.get("/api/stickers/recent", (req, res) => {
+  try {
+    const limit = Math.min(30, Math.max(1, parseInt(req.query.limit as string, 10) || 20));
+    // 简单查询 + 内存过滤，避免复杂查询卡住
+    const all = db.prepare("SELECT * FROM stickers").all() as any[];
+    const stickers = all.filter((s) => s.usageCount > 0).sort((a, b) => b.usageCount - a.usageCount).slice(0, limit);
     res.json({ ok: true, stickers });
   } catch (e: any) {
     res.json({ ok: false, error: e.message });
@@ -2191,7 +2326,10 @@ app.get("/api/stickers/search/:keyword", (req, res) => {
 });
 
 // 配置表情包上传中间件
-const stickerUpload = multer({ dest: path.join(DATA_DIR, "stickers/temp") });
+// 上传临时目录放在 stickers 主目录之外，避免被 /stickers 静态服务暴露临时文件
+const STICKER_TMP_DIR = path.join(DATA_DIR, ".sticker-tmp");
+if (!fs.existsSync(STICKER_TMP_DIR)) fs.mkdirSync(STICKER_TMP_DIR, { recursive: true });
+const stickerUpload = multer({ dest: STICKER_TMP_DIR });
 
 // 上传表情包
 app.post("/api/stickers/upload", stickerUpload.single("sticker"), (req, res) => {
@@ -2225,6 +2363,102 @@ app.post("/api/stickers/upload", stickerUpload.single("sticker"), (req, res) => 
   }
 });
 
+// 扫描 stickers/temp 目录，批量导入用户手动放入的图片
+// 把文件从 temp 移到 stickers 主目录，登记入库（默认 general 分类），导入后清空 temp
+app.post("/api/stickers/scan-import", (_req, res) => {
+  try {
+    const stickerDir = path.join(DATA_DIR, "stickers");
+    const tempDir = path.join(stickerDir, "temp");
+    if (!fs.existsSync(tempDir)) {
+      return res.json({ ok: true, imported: 0, skipped: 0, total: dbStickers.count(), message: "temp 目录不存在" });
+    }
+
+    const allowedExts = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"];
+    const files = fs.readdirSync(tempDir).filter((f) => allowedExts.includes(path.extname(f).toLowerCase()));
+
+    if (files.length === 0) {
+      return res.json({ ok: true, imported: 0, skipped: 0, total: dbStickers.count(), message: "temp 目录无图片文件" });
+    }
+
+    let imported = 0;
+    let skipped = 0;
+    const errors: string[] = [];
+
+    for (const file of files) {
+      const srcPath = path.join(tempDir, file);
+
+      // 去重：数据库已有该 filename 则跳过（之前导入过），并清理 temp 残留
+      if (dbStickers.getByFilename(file)) {
+        skipped++;
+        try { fs.unlinkSync(srcPath); } catch { /* 忽略删除失败 */ }
+        continue;
+      }
+
+      // 主目录已有同名文件但数据库无记录（异常残留），重命名避免覆盖
+      let finalName = file;
+      if (fs.existsSync(path.join(stickerDir, file))) {
+        finalName = `${Date.now()}-${Math.random().toString(36).slice(2)}${path.extname(file)}`;
+      }
+
+      try {
+        fs.renameSync(srcPath, path.join(stickerDir, finalName));
+        dbStickers.add({ filename: finalName, category: "general", keywords: "[]", emotionMatch: "" });
+        imported++;
+      } catch (e) {
+        errors.push(`${file}: ${(e as Error).message}`);
+      }
+    }
+
+    // 导入完成后，尝试清空 temp 目录（仅删除空文件夹或残留的非图片文件）
+    try {
+      const remaining = fs.readdirSync(tempDir);
+      for (const f of remaining) {
+        try { fs.unlinkSync(path.join(tempDir, f)); } catch { /* 忽略 */ }
+      }
+    } catch { /* 忽略 */ }
+
+    console.log(`[stickers/scan-import] 导入 ${imported}，跳过 ${skipped}，错误 ${errors.length}`);
+    res.json({ ok: true, imported, skipped, errors, total: dbStickers.count() });
+  } catch (e: any) {
+    console.error("[stickers/scan-import] 失败:", e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// 标注表情包（手动更新分类/关键词/情绪匹配，供前端标注功能调用）
+app.patch("/api/stickers/:id", (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { category, keywords, emotionMatch } = req.body as {
+      category?: string; keywords?: string | string[]; emotionMatch?: string;
+    };
+
+    const validCategories = ["happy", "angry", "cute", "confused", "sad", "general"];
+    if (category !== undefined && !validCategories.includes(category)) {
+      return res.json({ ok: false, error: "无效的分类" });
+    }
+    // emotionMatch 允许空字符串（清除标注）或 8 种情绪之一
+    const validEmotions = ["", "开心", "生气", "难过", "撒娇", "惊讶", "疑惑", "害羞", "平静"];
+    if (emotionMatch !== undefined && !validEmotions.includes(emotionMatch)) {
+      return res.json({ ok: false, error: "无效的情绪标签" });
+    }
+
+    const keywordsStr = keywords !== undefined
+      ? (Array.isArray(keywords) ? JSON.stringify(keywords) : (keywords as string))
+      : undefined;
+
+    const updated = dbStickers.update(id, {
+      category,
+      keywords: keywordsStr,
+      emotionMatch,
+    });
+
+    res.json({ ok: updated, sticker: dbStickers.getById(id) });
+  } catch (e: any) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
 // 删除表情包
 app.delete("/api/stickers/:id", (req, res) => {
   try {
@@ -2248,39 +2482,201 @@ app.delete("/api/stickers/:id", (req, res) => {
   }
 });
 
-// 用户发送表情包
-app.post("/api/send-sticker", (req, res) => {
+// 用户发送表情包（SSE 流式 + 触发 AI 回复）
+// 用户发送表情包时，AI 也能感知到（用描述性文本传入上下文），并流式回复
+app.post("/api/send-sticker", async (req, res) => {
+  const { characterId, stickerId } = req.body as { characterId?: string; stickerId?: number };
+  if (!characterId || !stickerId) {
+    return res.status(400).json({ error: "缺少参数" });
+  }
+
+  const character = getCharacter(characterId);
+  if (!character) return res.status(404).json({ error: "角色不存在" });
+
+  const sticker = dbStickers.getById(stickerId);
+  if (!sticker) return res.status(404).json({ error: "表情包不存在" });
+
+  // 获取 API 配置
+  const api = getAPIConfig(character);
+  if (!api.apiKey) return res.status(500).json({ error: "未配置 API Key" });
+
+  // 1) 保存用户表情包消息（content 含 [表情包:category:filename]，前端可解析还原图片）
+  // 同步保存关联 + 增加使用次数
+  const stickerContent = `[表情包:${sticker.category}:${sticker.filename}]`;
+  const userInsert = dbMessages.addUser(characterId, stickerContent);
+  const userMessageId = userInsert.lastInsertRowid as number;
+  dbMessageStickers.add(userMessageId, stickerId);
+  dbStickers.incrementUsage(stickerId);
+
+  // 2) 构造给 AI 的"消息描述"：让 AI 知道用户发了一个表情包
+  const stickerDesc = sticker.emotionMatch
+    ? `[用户发送了一个"${sticker.emotionMatch}"情绪的表情包]`
+    : `[用户发送了一个表情包]`;
+
+  // 3) 加载上下文
+  const convData = loadConversation(characterId);
+  const currentMood = character.mood;
+  const petState = loadPetState(characterId);
+  const systemPrompt = buildPersona(characterToPersona(character), currentMood, petState);
+
+  // 桌宠状态变化（与 /api/chat 保持一致）
+  petState.chatCount += 1;
+  petState.totalChats += 1;
+  let coinReward = 0;
+  if (petState.chatCount >= 10) {
+    petState.chatCount = 0;
+    petState.coins += 5;
+    coinReward = 5;
+  }
+  petState.hunger = clampNum(petState.hunger - 1, 0, 100);
+  petState.fatigue = clampNum(petState.fatigue + 1, 0, 100);
+  const newAchievements = updatePetStatsAndCheckAchievements(petState);
+  savePetState(characterId, petState);
+
+  const messages: ChatMessage[] = buildTieredMessages(
+    convData,
+    { role: "user", content: stickerDesc },
+    { role: "system", content: systemPrompt }
+  );
+  if (convData.summary) {
+    messages.splice(1, 0, { role: "system" as const, content: `【之前的对话记忆】\n${convData.summary}` });
+  }
+
+  // 4) SSE 响应头
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+
+  // 先发一个 userMessage 事件（前端拿到真实 messageId）
+  sseSend(res, { type: "userMessage", messageId: userMessageId });
+  // 通知前端用户刚发的表情包信息（用于显示 loading 等）
+  sseSend(res, {
+    type: "userSticker",
+    sticker: { id: sticker.id, url: `/stickers/${sticker.filename}`, category: sticker.category },
+  });
+
+  let clientClosed = false;
+  res.on("close", () => { clientClosed = true; });
+
+  const sendError = (msg: string) => {
+    if (clientClosed) return;
+    sseSend(res, { type: "error", error: msg });
+    res.end();
+  };
+
   try {
-    const { characterId, stickerId } = req.body;
-    if (!characterId || !stickerId) {
-      return res.json({ ok: false, error: "缺少参数" });
+    const { fullReply, rawMood, emotion } = await callDeepSeekStream(
+      api.apiKey, api.model, api.url,
+      messages,
+      (text) => sseSend(res, { type: "text", text }),
+      (mood) => {
+        const finalMood = mood !== null ? clampMoodChange(currentMood, mood, 10) : currentMood;
+        sseSend(res, { type: "mood", mood: finalMood });
+      },
+      (emotion) => {
+        if (emotion) sseSend(res, { type: "emotion", emotion });
+      },
+      () => clientClosed
+    );
+
+    const reply = fullReply.trim() || "（她好像走神了，再说一次试试～）";
+    let finalMood = rawMood !== null ? clampMoodChange(currentMood, rawMood, 10) : currentMood;
+    let effectiveEmotion = emotion;
+
+    // 保底心情变化（与 /api/chat 一致）
+    if (rawMood === null && !emotion) {
+      const sentiment = await analyzeSentiment(stickerDesc, api.apiKey, api.model, api.url);
+      if (sentiment) {
+        effectiveEmotion = sentiment.emotion;
+        finalMood = clampNum(currentMood + sentiment.moodChange, 0, 100);
+        if (!clientClosed) {
+          sseSend(res, { type: "mood", mood: finalMood });
+          sseSend(res, { type: "emotion", emotion: effectiveEmotion });
+        }
+      }
+    } else if ((effectiveEmotion === "生气" || effectiveEmotion === "难过") && finalMood >= currentMood - 2) {
+      finalMood = clampNum(currentMood - (3 + Math.floor(Math.random() * 3)), 0, 100);
+      if (!clientClosed) sseSend(res, { type: "mood", mood: finalMood });
+    } else if ((effectiveEmotion === "开心" || effectiveEmotion === "撒娇") && finalMood <= currentMood + 2) {
+      finalMood = clampNum(currentMood + (2 + Math.floor(Math.random() * 3)), 0, 100);
+      if (!clientClosed) sseSend(res, { type: "mood", mood: finalMood });
     }
 
-    // 验证表情包存在
-    const sticker = dbStickers.getById(stickerId);
-    if (!sticker) {
-      return res.json({ ok: false, error: "表情包不存在" });
+    // 保存 AI 回复
+    const aiInsert = dbMessages.addAssistant(characterId, reply);
+    const aiMessageId = aiInsert.lastInsertRowid as number;
+
+    // AI 自动发表情包（按情绪匹配 + 概率控制）
+    if (effectiveEmotion && !clientClosed) {
+      const matched = dbStickers.getByEmotion(effectiveEmotion);
+      if (matched.length > 0) {
+        // 概率控制：用户发表情包时 AI 回复概率较低（25%）避免每发必回
+        const lastStickerAt = (convData as any).lastStickerAt ? new Date((convData as any).lastStickerAt).getTime() : 0;
+        const minutesSinceLastSticker = lastStickerAt ? (Date.now() - lastStickerAt) / 60000 : 999;
+        let prob = 0.25;
+        if (minutesSinceLastSticker < 1) prob = 0.05;  // 1 分钟内发过 → 5%
+        else if (minutesSinceLastSticker < 3) prob = 0.15;
+        if (reply.length < 10) prob = 0;  // 短回复不发表情包
+
+        const dice = Math.random();
+        if (dice < prob) {
+          const top3 = matched.slice(0, Math.min(3, matched.length));
+          const selected = top3[Math.floor(Math.random() * top3.length)];
+          dbStickers.incrementUsage(selected.id);
+          dbMessageStickers.add(aiMessageId, selected.id);
+          (convData as any).lastStickerAt = new Date().toISOString();
+          sseSend(res, {
+            type: "sticker",
+            sticker: { id: selected.id, url: `/stickers/${selected.filename}`, category: selected.category },
+          });
+          console.log(`[send-sticker] AI回表情包: id=${selected.id}, prob=${prob.toFixed(2)}`);
+        } else {
+          console.log(`[send-sticker] AI跳表情包: prob=${prob.toFixed(2)}`);
+        }
+      }
     }
 
-    // 保存用户消息（表情包）
-    dbMessages.addUser(characterId, `[表情包:${sticker.category}]`);
-    const msgResult = db.prepare("SELECT last_insert_rowid() as id").get() as { id: number };
-    const messageId = msgResult.id;
+    // 上下文保存
+    convData.messages.push({ role: "user", content: stickerDesc });
+    convData.messages.push({ role: "assistant", content: reply });
+    while (convData.messages.length > MAX_HISTORY_ROUNDS * 2) convData.messages.shift();
+    convData.lastMood = finalMood;
+    convData.lastActiveTime = new Date().toISOString();
+    saveConversation(characterId, convData);
+    backupConversation(characterId);
 
-    // 关联表情包到消息
-    dbMessageStickers.add(messageId, stickerId);
+    generateSummaryIfNeeded(characterId).catch((e) => console.error("[summary] 摘要生成失败:", e));
+    updateMoodWithHistory(characterId, finalMood);
 
-    // 更新表情包使用次数
-    dbStickers.incrementUsage(stickerId);
+    // 亲密度联动
+    const moodDiff = finalMood - currentMood;
+    if (moodDiff < -3) {
+      petState.intimacy = clampNum(petState.intimacy - Math.min(5, Math.max(1, Math.round(Math.abs(moodDiff) / 3))), 0, 100);
+    } else if (moodDiff > 5) {
+      petState.intimacy = clampNum(petState.intimacy + Math.min(3, Math.round(moodDiff / 5)), 0, 100);
+      petState.fatigue = clampNum(petState.fatigue - Math.min(5, Math.max(2, Math.round(moodDiff / 3))), 0, 100);
+    }
+    const newAchFromIntimacy = updatePetStatsAndCheckAchievements(petState);
+    newAchievements.push(...newAchFromIntimacy);
+    savePetState(characterId, petState);
 
-    res.json({ ok: true, messageId });
-  } catch (e: any) {
-    res.json({ ok: false, error: e.message });
+    if (!clientClosed) {
+      sseSend(res, { type: "petState", petState, coinReward, newAchievements });
+      sseSend(res, { type: "done" });
+      res.end();
+    }
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") sendError("AI 响应超时");
+    else {
+      console.error("[send-sticker] 异常:", err);
+      sendError("服务器内部错误");
+    }
   }
 });
 
-// 表情包静态文件服务
-app.use("/stickers", express.static(path.join(DATA_DIR, "stickers")));
+
 
 app.listen(PORT, () => {
   console.log(`✅ 后端服务已启动: http://localhost:${PORT}`);

@@ -22,7 +22,7 @@ import {
   backfillDiaries,
   getMessages,
   extractFacts,
-  sendStickerMessage,
+  streamSticker,
 } from "./api";
 import type { Character, PetState, Sticker } from "./api";
 import { moodToEmoji } from "./utils";
@@ -422,15 +422,15 @@ export default function App() {
     }
   };
 
-  // ========== 发送表情包 ==========
+  // ========== 发送表情包（流式 + 触发 AI 回复）==========
   const handleSendSticker = async (sticker: Sticker) => {
     if (!currentCharacter) return;
 
-    // 重置定时器状态
+    // 重置定时器
     lastActivityRef.current = Date.now();
     proactiveActiveRef.current = false;
 
-    // 添加用户表情包消息到界面
+    // 立即添加用户表情包消息
     setMessages((prev) => [
       ...prev,
       {
@@ -443,12 +443,66 @@ export default function App() {
         },
       },
     ]);
+    setLoading(true);
+    assistantStartedRef.current = false;
 
-    // 保存到数据库
     try {
-      await sendStickerMessage(currentCharacter.id, sticker.id);
+      await streamSticker(currentCharacter.id, sticker.id, {
+        onMood: (m) => {
+          setMood(m);
+          setCharacters((prev) =>
+            prev.map((c) => (c.id === currentCharacter.id ? { ...c, mood: m } : c))
+          );
+          setCurrentCharacter((prev) => (prev ? { ...prev, mood: m } : prev));
+        },
+        onEmotion: (emo) => setEmotion(emo),
+        onText: (chunk) => {
+          if (!assistantStartedRef.current) {
+            assistantStartedRef.current = true;
+            setMessages((prev) => [
+              ...prev,
+              { role: "assistant", content: chunk },
+            ]);
+            setLoading(false);
+          } else {
+            setMessages((prev) => {
+              const last = prev[prev.length - 1];
+              if (last && last.role === "assistant") {
+                return [
+                  ...prev.slice(0, -1),
+                  { role: "assistant", content: last.content + chunk },
+                ];
+              }
+              return prev;
+            });
+          }
+        },
+        onPetState: (state) => setPetState(state),
+        onSticker: (s) => {
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last && last.role === "assistant") {
+              return [...prev.slice(0, -1), { ...last, sticker: s }];
+            }
+            return prev;
+          });
+        },
+        onDone: () => setLoading(false),
+        onError: (err) => {
+          setLoading(false);
+          setMessages((prev) => [
+            ...prev,
+            { role: "assistant", content: `（${err}）` },
+          ]);
+        },
+      });
     } catch (error) {
+      setLoading(false);
       console.error("发送表情包失败:", error);
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: "（网络开小差了，再发一次试试～）" },
+      ]);
     }
   };
 

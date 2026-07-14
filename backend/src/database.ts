@@ -606,15 +606,47 @@ export const dbDiary = {
 
 // ========== 表情包操作 ==========
 export const dbStickers = {
-  getAll: () => db.prepare("SELECT * FROM stickers ORDER BY category, createdAt").all() as DBSticker[],
+  getAll: () => db.prepare("SELECT * FROM stickers ORDER BY usageCount DESC, createdAt DESC").all() as DBSticker[],
+  // 最近使用：使用次数 > 0 的表情包，按次数倒序
+  getRecent: (limit: number) => db.prepare("SELECT * FROM stickers WHERE usageCount > 0 ORDER BY usageCount DESC, createdAt DESC LIMIT ?").all(limit) as DBSticker[],
+  // 分页查询（按使用次数倒序，常用在前），支持可选分类过滤
+  getPaged: (limit: number, offset: number, category?: string) => {
+    if (category && category !== "all") {
+      return db.prepare("SELECT * FROM stickers WHERE category = ? ORDER BY usageCount DESC, createdAt DESC LIMIT ? OFFSET ?")
+        .all(category, limit, offset) as DBSticker[];
+    }
+    return db.prepare("SELECT * FROM stickers ORDER BY usageCount DESC, createdAt DESC LIMIT ? OFFSET ?")
+      .all(limit, offset) as DBSticker[];
+  },
+  count: (category?: string) => {
+    if (category && category !== "all") {
+      return (db.prepare("SELECT COUNT(*) as cnt FROM stickers WHERE category = ?").get(category) as { cnt: number }).cnt;
+    }
+    return (db.prepare("SELECT COUNT(*) as cnt FROM stickers").get() as { cnt: number }).cnt;
+  },
   getByCategory: (category: string) => db.prepare("SELECT * FROM stickers WHERE category = ? ORDER BY usageCount DESC").all(category) as DBSticker[],
-  getByEmotion: (emotion: string) => db.prepare("SELECT * FROM stickers WHERE emotionMatch = ? ORDER BY usageCount DESC").all(emotion) as DBSticker[],
-  search: (keyword: string) => db.prepare("SELECT * FROM stickers WHERE keywords LIKE ? ORDER BY usageCount DESC").all(`%${keyword}%`) as DBSticker[],
+  // AI 自动发表情包：按情绪匹配，使用次数少的优先轮换（避免总发同一个）
+  getByEmotion: (emotion: string) => db.prepare("SELECT * FROM stickers WHERE emotionMatch = ? ORDER BY usageCount ASC").all(emotion) as DBSticker[],
+  search: (keyword: string) => db.prepare("SELECT * FROM stickers WHERE keywords LIKE ? OR category LIKE ? ORDER BY usageCount DESC").all(`%${keyword}%`, `%${keyword}%`) as DBSticker[],
   getById: (id: number) => db.prepare("SELECT * FROM stickers WHERE id = ?").get(id) as DBSticker | undefined,
+  // 按 filename 查询（扫描导入去重用）
+  getByFilename: (filename: string) => db.prepare("SELECT id FROM stickers WHERE filename = ?").get(filename) as { id: number } | undefined,
   add: (sticker: Omit<DBSticker, "id" | "usageCount" | "createdAt">) => {
     const result = db.prepare("INSERT INTO stickers (filename, category, keywords, emotionMatch) VALUES (?, ?, ?, ?)")
       .run(sticker.filename, sticker.category, sticker.keywords, sticker.emotionMatch);
     return result.lastInsertRowid as number;
+  },
+  // 标注：更新分类/关键词/情绪匹配
+  update: (id: number, fields: { category?: string; keywords?: string; emotionMatch?: string }) => {
+    const sets: string[] = [];
+    const params: (string | number)[] = [];
+    if (fields.category !== undefined) { sets.push("category = ?"); params.push(fields.category); }
+    if (fields.keywords !== undefined) { sets.push("keywords = ?"); params.push(fields.keywords); }
+    if (fields.emotionMatch !== undefined) { sets.push("emotionMatch = ?"); params.push(fields.emotionMatch); }
+    if (sets.length === 0) return false;
+    params.push(id);
+    const result = db.prepare(`UPDATE stickers SET ${sets.join(", ")} WHERE id = ?`).run(...params);
+    return result.changes > 0;
   },
   incrementUsage: (id: number) => {
     db.prepare("UPDATE stickers SET usageCount = usageCount + 1 WHERE id = ?").run(id);
@@ -622,6 +654,11 @@ export const dbStickers = {
   delete: (id: number) => {
     const result = db.prepare("DELETE FROM stickers WHERE id = ?").run(id);
     return result.changes > 0;
+  },
+  // 清理历史遗留的 placeholder 假记录（filename 以 placeholder_ 开头，无真实图片）
+  cleanPlaceholders: () => {
+    const result = db.prepare("DELETE FROM stickers WHERE filename LIKE 'placeholder_%'").run();
+    return result.changes;
   },
 };
 
@@ -660,60 +697,13 @@ export function initStickers(): void {
     console.log(`[db] 创建表情包目录: ${stickerDir}`);
   }
 
-  // 检查是否已有表情包数据
-  const count = db.prepare("SELECT COUNT(*) as cnt FROM stickers").get() as { cnt: number };
-  if (count.cnt > 0) {
-    console.log(`[db] 表情包数据库已有 ${count.cnt} 条数据，跳过初始化`);
-    return;
+  // 清理历史遗留的 placeholder 假记录（filename 以 placeholder_ 开头，无真实图片文件）
+  // 这些假记录会导致前端显示破图、AI 自动发表情包也发破图
+  const cleaned = dbStickers.cleanPlaceholders();
+  if (cleaned > 0) {
+    console.log(`[db] 已清理 ${cleaned} 条 placeholder 假记录`);
   }
 
-  console.log("[db] 初始化表情包数据...");
-
-  // 初始表情包分类和关键词
-  const initialStickers = [
-    // 开心类
-    { category: "happy", keywords: ["开心", "高兴", "哈哈", "笑"], emotionMatch: "开心" },
-    { category: "happy", keywords: ["耶", "太好了", "棒", "赞"], emotionMatch: "开心" },
-    { category: "happy", keywords: ["嘻嘻", "嘿嘿", "乐", "喜"], emotionMatch: "开心" },
-
-    // 生气类
-    { category: "angry", keywords: ["生气", "愤怒", "哼", "气"], emotionMatch: "生气" },
-    { category: "angry", keywords: ["讨厌", "烦", "讨厌", "滚"], emotionMatch: "生气" },
-    { category: "angry", keywords: ["不爽", "讨厌", "生气", "哼"], emotionMatch: "生气" },
-
-    // 撒娇类
-    { category: "cute", keywords: ["撒娇", "哼", "讨厌", "嘛"], emotionMatch: "撒娇" },
-    { category: "cute", keywords: ["唔", "呜", "求", "拜托"], emotionMatch: "撒娇" },
-    { category: "cute", keywords: ["亲爱的", "宝贝", "亲亲", "抱抱"], emotionMatch: "撒娇" },
-
-    // 疑惑类
-    { category: "confused", keywords: ["？", "啊", "咦", "诶"], emotionMatch: "疑惑" },
-    { category: "confused", keywords: ["什么", "为什么", "怎么会", "哈"], emotionMatch: "疑惑" },
-    { category: "confused", keywords: ["不懂", "不明白", "困惑", "迷茫"], emotionMatch: "疑惑" },
-
-    // 难过类
-    { category: "sad", keywords: ["难过", "伤心", "哭", "呜呜"], emotionMatch: "难过" },
-    { category: "sad", keywords: ["不开心", "委屈", "难受", "心痛"], emotionMatch: "难过" },
-    { category: "sad", keywords: ["想念", "怀念", "思", "念"], emotionMatch: "难过" },
-
-    // 通用类
-    { category: "general", keywords: ["好的", "嗯", "哦", "啊"], emotionMatch: "" },
-    { category: "general", keywords: ["明白", "知道", "懂", "了解"], emotionMatch: "" },
-    { category: "general", keywords: ["谢谢", "感谢", "多谢", "谢"], emotionMatch: "" },
-  ];
-
-  const insert = db.prepare("INSERT INTO stickers (filename, category, keywords, emotionMatch) VALUES (?, ?, ?, ?)");
-  const batch = db.transaction(() => {
-    for (const s of initialStickers) {
-      insert.run(
-        `placeholder_${Date.now()}_${Math.random().toString(36).slice(2)}.png`,
-        s.category,
-        JSON.stringify(s.keywords),
-        s.emotionMatch
-      );
-    }
-  });
-
-  batch();
-  console.log(`[db] 初始化 ${initialStickers.length} 条表情包占位数据（需上传实际图片）`);
+  const count = (db.prepare("SELECT COUNT(*) as cnt FROM stickers").get() as { cnt: number }).cnt;
+  console.log(`[db] 表情包数据库现有 ${count} 条真实记录`);
 }

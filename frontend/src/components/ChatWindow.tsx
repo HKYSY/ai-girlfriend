@@ -81,27 +81,41 @@ export default function ChatWindow({ messages, loading, characterName, character
           </Button>
         </div>
       )}
-      {messages.map((msg, i) => (
-        <div key={i} className={`message-row ${msg.role}`}>
-          {msg.role === "assistant" && renderAiAvatar()}
-          {msg.role === "user" && renderUserAvatar()}
-          <div className={`message ${msg.role}`}>
-            {msg.role === "assistant" ? cleanAssistantText(msg.content) : msg.content}
-            {msg.sticker && (
-              <div className="message-sticker">
+      {messages.map((msg, i) => {
+        // 解析 [表情包:category:filename] 格式的旧数据 / DB 加载数据
+        const stickerMatch = msg.content?.match(/^\[表情包:([^:]+):([^\]]+)\]$/);
+        const inlineSticker = stickerMatch
+          ? {
+              id: -1,
+              url: `/stickers/${stickerMatch[2]}`,
+              category: stickerMatch[1],
+            }
+          : msg.sticker;
+        // sticker-only 消息：有 sticker（用户发的纯表情包 + AI 发的纯表情包都不进气泡，独立成行）
+        const isStickerOnly = !!inlineSticker;
+        return (
+          <div key={i} className={`message-row ${msg.role}${isStickerOnly ? " sticker-only" : ""}`}>
+            {msg.role === "assistant" && renderAiAvatar()}
+            {msg.role === "user" && renderUserAvatar()}
+            {isStickerOnly ? (
+              <div className="message-sticker-only">
                 <img
-                  src={msg.sticker.url}
-                  alt={msg.sticker.category}
-                  className="sticker-img"
+                  src={inlineSticker!.url}
+                  alt={inlineSticker!.category}
+                  className="sticker-img-only"
                   onError={(e) => {
                     (e.target as HTMLImageElement).style.display = "none";
                   }}
                 />
               </div>
+            ) : (
+              <div className={`message ${msg.role}`}>
+                {msg.role === "assistant" ? cleanAssistantText(msg.content) : msg.content}
+              </div>
             )}
           </div>
-        </div>
-      ))}
+        );
+      })}
       {loading && (
         <div className="message-row assistant">
           {renderAiAvatar()}

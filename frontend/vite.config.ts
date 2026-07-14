@@ -9,12 +9,21 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    // 开发环境代理：把 /api 请求转发到后端，避免跨域问题
+    // 开发环境代理：把 /api 和 /stickers 请求转发到后端，避免跨域问题
     proxy: {
       "/api": {
         target: "http://localhost:3001",
         changeOrigin: true,
       },
+      "/stickers": {
+        target: "http://localhost:3001",
+        changeOrigin: true,
+      },
+    },
+  },
+  build: {
+    rollupOptions: {
+      output: {},
     },
   },
 });

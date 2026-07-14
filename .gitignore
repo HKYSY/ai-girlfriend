@@ -25,3 +25,9 @@ backend/uploads/
 .DS_Store
 Thumbs.db
 *.log
+
+# 运行时 / 构建临时产物
+v.err
+v.log
+ai-girlfriend.zip
+backend/upload.json

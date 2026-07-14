@@ -748,3 +748,53 @@ export async function sendStickerMessage(
   }
   return res.json();
 }
+
+// 发送表情包并触发 AI 回复（SSE 流式，与 streamChat 类似）
+export async function streamSticker(
+  characterId: string,
+  stickerId: number,
+  callbacks: StreamCallbacks
+): Promise<void> {
+  const res = await fetch("/api/send-sticker", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ characterId, stickerId }),
+  });
+  // 与 streamChat 共用同一个 SSE 消费函数
+  return consumeSSE(res, callbacks);
+}
+
+// 扫描 stickers/temp 目录，批量导入用户手动放入的图片
+export async function scanImportStickers(): Promise<{
+  ok: boolean;
+  imported: number;
+  skipped: number;
+  errors?: string[];
+  total: number;
+  message?: string;
+}> {
+  const res = await fetch("/api/stickers/scan-import", { method: "POST" });
+  if (!res.ok) throw new Error("扫描导入失败");
+  return res.json();
+}
+
+// 标注表情包（更新分类 / 情绪匹配，供手动标注用）
+export async function updateSticker(
+  id: number,
+  fields: { category?: string; emotionMatch?: string }
+): Promise<{ ok: boolean; sticker?: Sticker }> {
+  const res = await fetch(`/api/stickers/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(fields),
+  });
+  if (!res.ok) throw new Error("标注失败");
+  return res.json();
+}
+
+// 获取最近使用过的表情包（QQ 风格"最近"区域用）
+export async function getRecentStickers(): Promise<{ ok: boolean; stickers: Sticker[] }> {
+  const res = await fetch("/api/stickers/recent", { cache: "no-store" });
+  if (!res.ok) throw new Error("获取最近表情包失败");
+  return res.json();
+}
