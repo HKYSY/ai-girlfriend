@@ -27,7 +27,7 @@ import {
 import type { Character, ConversationData } from "./storage.js";
 import { mergeDiaryEntries, parseMarkers } from "./utils.js";
 import type { DiaryEntry } from "./utils.js";
-import { migrateFromJSON, dbPetState, dbMoodHistory, dbDiary, dbMessages, dbFacts, dbConvMeta, dbStickers, dbMessageStickers, localDateStr, initStickers } from "./database.js";
+import { migrateFromJSON, dbPetState, dbMoodHistory, dbDiary, dbMessages, dbFacts, dbConvMeta, dbStickers, dbMessageStickers, localDateStr, initStickers, db } from "./database.js";
 import type { DBMessage, DBCharacter } from "./database.js";
 
 dotenv.config();
