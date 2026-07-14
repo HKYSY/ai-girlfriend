@@ -2263,11 +2263,9 @@ app.post("/api/send-sticker", (req, res) => {
     }
 
     // 保存用户消息（表情包）
-    const messageId = dbMessages.add({
-      characterId,
-      role: "user",
-      content: `[表情包:${sticker.category}]`,
-    });
+    dbMessages.addUser(characterId, `[表情包:${sticker.category}]`);
+    const msgResult = db.prepare("SELECT last_insert_rowid() as id").get() as { id: number };
+    const messageId = msgResult.id;
 
     // 关联表情包到消息
     dbMessageStickers.add(messageId, stickerId);
