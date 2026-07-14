@@ -20,6 +20,8 @@ interface Live2DCanvasProps {
   onBubble: (text: string) => void;
   // 外部强制关闭浮层信号（每次递增触发关闭）
   closeSignal?: number;
+  // 控制 canvas 显示/隐藏（不卸载，保持模型加载状态）
+  visible?: boolean;
 }
 
 // 心情值 → 候选表情名映射（按优先级排列，兼容不同模型）
@@ -109,12 +111,14 @@ export default function Live2DCanvas({
   onAIContext,
   onBubble,
   closeSignal,
+  visible = true, // 默认显示
 }: Live2DCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const moodGlowRef = useRef<HTMLDivElement>(null);
   const modelRef = useRef<Live2DModel | null>(null);
   const appRef = useRef<PIXI.Application | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null); // 保存 canvas 引用，用于动态控制显示
   const baseScaleRef = useRef<number>(1);
   const scaleMulRef = useRef<number>(1);
 
@@ -235,8 +239,11 @@ export default function Live2DCanvas({
       canvas.style.top = "0";
       canvas.style.left = "0";
       canvas.style.pointerEvents = "none";
-      canvas.style.zIndex = "3";
+      canvas.style.zIndex = visible ? "3" : "-999"; // 根据 visible 控制层级
+      canvas.style.opacity = visible ? "1" : "0"; // 根据 visible 控制透明度
+      canvas.style.transition = "opacity 0.2s ease"; // 添加过渡动画
       document.body.appendChild(canvas);
+      canvasRef.current = canvas; // 保存引用，用于后续动态控制
 
       try {
         const model = await Live2DModel.from(modelUrl);
@@ -416,6 +423,20 @@ export default function Live2DCanvas({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelUrl]);
+
+  // 监听 visible 变化，动态控制 canvas 显示/隐藏（不卸载，保持模型加载状态）
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    if (visible) {
+      canvas.style.zIndex = "3";
+      canvas.style.opacity = "1";
+    } else {
+      canvas.style.zIndex = "-999";
+      canvas.style.opacity = "0";
+    }
+  }, [visible]);
 
   // ESC 关闭互动浮层
   useEffect(() => {

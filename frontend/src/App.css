@@ -445,15 +445,27 @@ body::after {
   display: flex;
   gap: var(--space-2);
   max-width: 85%;
+  /* GPU加速的入场动画：slide up + fade + scale */
   animation: msgEnter 0.4s var(--ease-out-expo);
+  will-change: transform, opacity, filter;
+  /* 优化渲染性能 */
+  contain: layout style paint;
 }
 
 .message-row.user { align-self: flex-end; flex-direction: row-reverse; }
 .message-row.assistant { align-self: flex-start; }
 
 @keyframes msgEnter {
-  from { opacity: 0; transform: translateY(12px) scale(0.94); filter: blur(6px); }
-  to { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.95); /* 从下方滑入 */
+    filter: blur(4px); /* 轻微模糊 */
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
 }
 
 .message {
@@ -762,12 +774,39 @@ body::after {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  animation: interactPop 0.25s var(--ease-out-back);
+  /* GPU加速的弹出动画：scale + fade */
+  animation: interactPop 0.32s var(--ease-out-back);
+  will-change: transform, opacity;
 }
 
 @keyframes interactPop {
-  from { opacity: 0; transform: translate(-50%, -50%) scale(0.9); }
-  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.85) translateY(20px);
+  }
+  60% {
+    transform: translate(-50%, -50%) scale(1.02) translateY(-5px);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1) translateY(0);
+  }
+}
+
+/* 退出动画 */
+.interact-panel-exit {
+  animation: interactPopExit 0.2s var(--ease-out-expo) forwards;
+}
+
+@keyframes interactPopExit {
+  from {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.9);
+  }
 }
 
 .interact-header {

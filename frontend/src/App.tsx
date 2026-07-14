@@ -1,11 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import "./App.css";
 import "./settings.css";
+import "./onboarding.css";
 import ChatWindow, { type Message } from "./components/ChatWindow";
 import ChatInput from "./components/ChatInput";
 import Live2DCanvas from "./components/Live2DCanvas";
 import MeteorCanvas from "./components/MeteorCanvas";
 import SettingsPage from "./components/SettingsPage";
+import OnboardingWizard from "./components/OnboardingWizard";
 import {
   streamChat,
   streamProactive,
@@ -95,6 +97,10 @@ export default function App() {
 
   // ========== UI 状态 ==========
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // 首次打开引导页（localStorage 标记是否已完成）
+  const [onboardingActive, setOnboardingActive] = useState(() => {
+    return localStorage.getItem("onboarding-completed") !== "true";
+  });
   const [closeSignal, setCloseSignal] = useState(0);
   const [splitRatio, setSplitRatio] = useState(loadSplitRatio);
   // 主动消息开关（关机按钮）：false 时 AI 不会自动发消息
@@ -646,6 +652,19 @@ export default function App() {
     );
   }
 
+  // ========== 首次引导页 ==========
+  if (onboardingActive && currentCharacter) {
+    return (
+      <OnboardingWizard
+        character={currentCharacter}
+        onComplete={(char) => {
+          setOnboardingActive(false);
+          handleCharacterUpdated(char);
+        }}
+      />
+    );
+  }
+
   return (
     <div className="app" ref={containerRef}>
       <MeteorCanvas />
@@ -709,9 +728,9 @@ export default function App() {
           </div>
         </div>
 
-        {/* Live2D 画布 */}
+        {/* Live2D 画布 - 始终渲染，通过visible prop控制显示以避免重新加载 */}
         <div className="stage-canvas">
-          {currentCharacter && !settingsOpen && (
+          {currentCharacter && (
             <Live2DCanvas
               key={currentCharacter.modelUrl}
               modelUrl={currentCharacter.modelUrl}
@@ -726,6 +745,7 @@ export default function App() {
               onAIContext={handlePetAIContext}
               onBubble={triggerBubble}
               closeSignal={closeSignal}
+              visible={!settingsOpen} // 打开设置时隐藏canvas，但不卸载
             />
           )}
         </div>

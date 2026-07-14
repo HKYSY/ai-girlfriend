@@ -1,0 +1,323 @@
+/* ========================================
+   Onboarding Wizard — 首次引导页
+   Uses design tokens from tokens.css
+   ======================================== */
+
+.onboarding-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  background: var(--color-surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6);
+  overflow-y: auto;
+  /* GPU加速的入场动画：fade + scale */
+  animation: onboardingEnter 0.4s var(--ease-out-back);
+  will-change: transform, opacity;
+}
+
+@keyframes onboardingEnter {
+  from {
+    opacity: 0;
+    transform: scale(0.92); /* 从小到大 */
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* 退出动画 */
+.onboarding-overlay-exit {
+  animation: onboardingExit 0.3s var(--ease-out-expo) forwards;
+}
+
+@keyframes onboardingExit {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.05); /* 向外放大 */
+  }
+}
+
+[data-theme="dark"] .onboarding-overlay {
+  background: #0a0a14;
+}
+
+.onboarding-container {
+  width: 100%;
+  max-width: 560px;
+  background: oklch(1 0 0 / 0.92);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 8px 40px oklch(0 0 0 / 0.12);
+  padding: var(--space-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  min-height: 520px;
+  max-height: 90vh;
+}
+
+[data-theme="dark"] .onboarding-container {
+  background: oklch(0.16 0.01 280 / 0.95);
+  box-shadow: 0 8px 40px oklch(0 0 0 / 0.4);
+}
+
+/* ── 顶部进度 ── */
+.onboarding-progress {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: space-between;
+}
+
+.onboarding-step-dot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  padding: var(--space-2) 0;
+  border-top: 3px solid oklch(0 0 0 / 0.08);
+  color: var(--color-ink-muted);
+  font-size: 12px;
+  transition: border-color 0.3s ease, color 0.3s ease;
+}
+
+[data-theme="dark"] .onboarding-step-dot {
+  border-top-color: oklch(1 0 0 / 0.08);
+}
+
+.onboarding-step-dot.done {
+  border-top-color: var(--color-accent-success);
+  color: var(--color-accent-success);
+}
+
+.onboarding-step-dot.active {
+  border-top-color: var(--color-brand-500);
+  color: var(--color-brand-500);
+  font-weight: 600;
+}
+
+/* ── 内容区 ── */
+.onboarding-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.onboarding-step-header h2 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--color-ink);
+  margin-bottom: 4px;
+}
+
+.onboarding-step-header p {
+  font-size: 14px;
+  color: var(--color-ink-muted);
+  margin-bottom: var(--space-6);
+}
+
+/* ── 表单字段 ── */
+.onboarding-step-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.onboarding-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.onboarding-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-ink);
+}
+
+.onboarding-link {
+  font-size: 12px;
+  color: var(--color-brand-500);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.onboarding-link:hover {
+  text-decoration: underline;
+}
+
+.onboarding-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.onboarding-tag {
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.2s;
+}
+
+.onboarding-tag:hover {
+  background: var(--color-brand-100);
+}
+
+/* ── 连接测试 ── */
+.onboarding-test {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: oklch(0 0 0 / 0.03);
+  border-radius: var(--radius-md);
+}
+
+[data-theme="dark"] .onboarding-test {
+  background: oklch(1 0 0 / 0.05);
+}
+
+.onboarding-test-result {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.onboarding-test-result.ok {
+  color: var(--color-accent-success);
+}
+
+.onboarding-test-result.fail {
+  color: var(--color-accent-danger);
+}
+
+/* ── 模型选择网格 ── */
+.onboarding-model-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: var(--space-3);
+}
+
+.onboarding-model-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 2px solid oklch(0 0 0 / 0.08);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  background: transparent;
+  transition: border-color 0.2s, background 0.2s;
+  font-size: 13px;
+  color: var(--color-ink);
+}
+
+[data-theme="dark"] .onboarding-model-card {
+  border-color: oklch(1 0 0 / 0.1);
+}
+
+.onboarding-model-card:hover {
+  border-color: var(--color-brand-300);
+  background: var(--color-brand-50);
+}
+
+.onboarding-model-card.selected {
+  border-color: var(--color-brand-500);
+  background: var(--color-brand-100);
+}
+
+.onboarding-model-preview {
+  width: 80px;
+  height: 80px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--color-brand-50);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.onboarding-model-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* ── 完成页 ── */
+.onboarding-done {
+  align-items: center;
+  text-align: center;
+  gap: var(--space-4);
+  padding: var(--space-8) 0;
+}
+
+.onboarding-done-icon {
+  color: var(--color-brand-500);
+  animation: onboarding-pulse 2s ease-in-out infinite;
+}
+
+@keyframes onboarding-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.08); opacity: 0.85; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-done-icon { animation: none; }
+}
+
+.onboarding-done h3 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--color-ink);
+}
+
+.onboarding-done p {
+  color: var(--color-ink-muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.onboarding-done-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  background: oklch(0.55 0.14 145 / 0.12);
+  color: var(--color-accent-success);
+  border-radius: var(--radius-full);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* ── 底部导航 ── */
+.onboarding-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding-top: var(--space-4);
+  border-top: 1px solid oklch(0 0 0 / 0.06);
+}
+
+[data-theme="dark"] .onboarding-nav {
+  border-top-color: oklch(1 0 0 / 0.08);
+}
+
+/* ── 响应式 ── */
+@media (max-width: 600px) {
+  .onboarding-overlay { padding: var(--space-3); }
+  .onboarding-container { padding: var(--space-5); min-height: 400px; }
+  .onboarding-step-dot span { font-size: 10px; }
+  .onboarding-model-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); }
+}

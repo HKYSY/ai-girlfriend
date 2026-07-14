@@ -35,6 +35,63 @@ dotenv.config();
 // 执行旧数据迁移（JSON → SQLite，仅首次执行）
 migrateFromJSON();
 
+// ========== JSON安全转义函数 ==========
+// 清理消息内容中的无效转义字符，确保JSON格式正确
+function sanitizeMessageContent(content: string): string {
+  if (typeof content !== "string") return String(content);
+
+  // 移除所有孤立的Unicode代理字符（U+D800-U+DFFF）
+  // 这些是emoji或特殊字符的高位/低位代理，单独出现会破坏JSON序列化
+  content = content.replace(/[\u{D800}-\u{DFFF}]/gu, '');
+
+  // 移除Unicode替换字符（U+FFFD）
+  content = content.replace(/\u{FFFD}/gu, '');
+
+  // 移除或转义无效的转义序列
+  // 1. 修复未完成的十六进制转义 \x 后面没有两位十六进制字符
+  content = content.replace(/\\x(?![0-9a-fA-F]{2})/g, "");
+
+  // 2. 修复未完成的Unicode转义 \u 后面没有四位十六进制字符
+  content = content.replace(/\\u(?![0-9a-fA-F]{4})/g, "");
+
+  // 3. 移除其他无效的转义序列（保留有效的：\\, \", \/, \b, \f, \n, \r, \t）
+  content = content.replace(/\\(?![\\\"\/bfnrt])/g, "");
+
+  return content;
+}
+
+// ========== 场景描写检测函数 ==========
+// 检测AI回复是否包含过多场景/动作描写
+function containsSceneDescription(text: string): { detected: boolean; keywords: string[] } {
+  // 场景描写关键词黑名单（常见动作、神态、场景描写词汇）
+  const sceneKeywords = [
+    // 动作类
+    "愣了一下", "顿住", "指尖停在", "扁了扁嘴", "慢吞吞地", "凑过来",
+    "歪头", "歪了歪头", "凑近", "转身", "低下头", "抬起头",
+    // 神态类
+    "眼神", "神情", "目光", "眼神里", "表情", "神色",
+    // 场景类
+    "看着", "盯着", "望着", "看着你", "盯着你", "望着你",
+    // 心理活动类
+    "心里", "内心", "心里五味杂陈", "心里一阵", "心里有些",
+    // 动作描写引导词
+    "动作", "神态", "场景", "然后慢吞吞", "然后转身",
+  ];
+
+  const matches: string[] = [];
+  for (const keyword of sceneKeywords) {
+    if (text.includes(keyword)) {
+      matches.push(keyword);
+    }
+  }
+
+  // 包含2个以上关键词则判定为场景描写
+  return {
+    detected: matches.length >= 2,
+    keywords: matches
+  };
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -417,19 +474,35 @@ async function callDeepSeekStream(
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 120000);
 
+  // 清理消息内容中的无效转义字符
+  const sanitizedMessages = messages.map(msg => ({
+    ...msg,
+    content: sanitizeMessageContent(msg.content)
+  }));
+
+  const requestBody = JSON.stringify({ model, messages: sanitizedMessages, stream: true });
+
   const response = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
     },
-    body: JSON.stringify({ model, messages, stream: true }),
+    body: requestBody,
     signal: controller.signal,
   });
   clearTimeout(timeoutId);
 
   if (!response.ok || !response.body) {
-    throw new Error(`AI 调用失败 (${response.status})`);
+    // 获取详细的错误信息
+    let errorDetail = "";
+    try {
+      const errorBody = await response.text();
+      errorDetail = ` | 详情: ${errorBody}`;
+    } catch (e) {
+      errorDetail = "";
+    }
+    throw new Error(`AI 调用失败 (${response.status})${errorDetail}`);
   }
 
   const reader = response.body.getReader();
@@ -623,6 +696,13 @@ app.post("/api/chat", async (req, res) => {
     }
 
     console.log(`[chat] 完成: mood=${currentMood}→${finalMood}(raw=${rawMood}), emotion=${effectiveEmotion || "无"}, reply="${reply.slice(0, 50)}"`);
+
+    // 检测AI回复是否包含场景描写（第二重保护）
+    const sceneCheck = containsSceneDescription(reply);
+    if (sceneCheck.detected) {
+      console.warn(`[chat] ⚠️  AI回复包含场景描写关键词: ${sceneCheck.keywords.join(", ")} | reply="${reply.slice(0, 80)}..."`);
+      // 注意：这里只记录警告，不拦截回复（前端有第三重过滤兜底）
+    }
 
     // 保存对话 — 数据库永久保留
     dbMessages.addUser(characterId, message);
@@ -889,7 +969,8 @@ async function generateDiary(characterId: string, targetDate?: string): Promise<
 
   const recentDialog = dayMessages
     .filter((m: { role: string }) => m.role === "user" || m.role === "assistant")
-    .map((m: { role: string; content: string }) => `${m.role === "user" ? "用户" : character.name}: ${m.content.slice(0, 150)}`)
+    .slice(-30) // 最多取最近 30 条，避免 prompt 过大导致推理模型超时
+    .map((m: { role: string; content: string }) => `${m.role === "user" ? "用户" : character.name}: ${m.content.slice(0, 100)}`)
     .join("\n");
 
   const moodLevel = getMoodLevel(character.mood);
@@ -918,7 +999,7 @@ ${recentDialog || "（无对话记录）"}
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60000);
+    const timeoutId = setTimeout(() => controller.abort(), 120000);
     const response = await fetch(api.url, {
       method: "POST",
       headers: {
@@ -932,7 +1013,7 @@ ${recentDialog || "（无对话记录）"}
           { role: "user", content: userPrompt },
         ],
         stream: false,
-        max_tokens: 600,
+        max_tokens: 1500,
       }),
       signal: controller.signal,
     });

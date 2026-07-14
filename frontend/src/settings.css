@@ -8,12 +8,36 @@
   z-index: 10000;
   display: flex;
   background: var(--color-surface);
-  animation: settingsFadeIn 0.25s var(--ease-out-expo);
+  /* GPU加速的入场动画：slide + fade + scale */
+  animation: settingsEnter 0.35s var(--ease-out-expo);
+  will-change: transform, opacity;
 }
 
-@keyframes settingsFadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+@keyframes settingsEnter {
+  from {
+    opacity: 0;
+    transform: translateX(100%) scale(0.95); /* 从右侧滑入 + 微小scale */
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+/* 退出动画（通过React状态控制，添加.settings-page-exit类） */
+.settings-page-exit {
+  animation: settingsExit 0.25s var(--ease-out-expo) forwards;
+}
+
+@keyframes settingsExit {
+  from {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-100%) scale(0.95); /* 向左滑出 */
+  }
 }
 
 .settings-nav {

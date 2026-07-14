@@ -282,3 +282,66 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ========================================
+   Micro-interactions — 微交互效果
+   ======================================== */
+
+/* 按钮hover效果：轻微scale + 阴影增强 */
+.btn-lift {
+  transition: transform var(--duration-fast) var(--ease-out-expo),
+              box-shadow var(--duration-fast) var(--ease-out-expo);
+  will-change: transform;
+}
+
+.btn-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px oklch(0.52 0.22 10 / 0.20);
+}
+
+.btn-lift:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 8px oklch(0.52 0.22 10 / 0.15);
+}
+
+/* Ripple 效果容器 */
+.ripple-container {
+  position: relative;
+  overflow: hidden;
+}
+
+.ripple-container::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  border-radius: 50%;
+  background: oklch(1 0 0 / 0.3);
+  transform: translate(-50%, -50%);
+  transition: width 0.5s ease, height 0.5s ease;
+}
+
+.ripple-container:active::after {
+  width: 200px;
+  height: 200px;
+}
+
+/* Focus状态优化 */
+.focus-ring:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px oklch(0.52 0.22 10 / 0.25);
+  transition: box-shadow var(--duration-fast) ease;
+}
+
+/* 平滑的过渡效果 */
+.smooth-transition {
+  transition: all var(--duration-normal) var(--ease-out-expo);
+}
+
+/* GPU加速提示 */
+.gpu-accelerated {
+  will-change: transform, opacity;
+  transform: translateZ(0);
+}

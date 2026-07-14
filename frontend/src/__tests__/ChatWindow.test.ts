@@ -53,4 +53,35 @@ describe("cleanAssistantText", () => {
   it("空字符串原样返回", () => {
     expect(cleanAssistantText("")).toBe("");
   });
+
+  // 新增：测试过滤未用括号的场景描写
+  it("过滤未用括号的动作描写（被你一说...）", () => {
+    const input = "被你一说，我愣了一下，指尖停在屏幕上。然后慢吞吞地打字回你： 唔…我这不是习惯了嘛😣";
+    const result = cleanAssistantText(input);
+    expect(result).toBe("唔…我这不是习惯了嘛😣");
+  });
+
+  it("过滤未用括号的心理描写（看着...心里...）", () => {
+    const input = "看着你的消息，我心里五味杂陈，不知道该说什么好。 唔...好吧";
+    const result = cleanAssistantText(input);
+    expect(result).toBe("唔...好吧");
+  });
+
+  it("过滤未用括号的神态描写（歪了歪头...眼神...）", () => {
+    const input = "歪了歪头，眼神里带着疑惑，凑近了屏幕。 好像是这样哦";
+    const result = cleanAssistantText(input);
+    expect(result).toBe("好像是这样哦");
+  });
+
+  it("保留正常消息（无场景描写）", () => {
+    const input = "今天去漫展了！超开心！遇到好多可爱的小姐姐✨";
+    const result = cleanAssistantText(input);
+    expect(result).toBe("今天去漫展了！超开心！遇到好多可爱的小姐姐✨");
+  });
+
+  it("综合过滤：括号+未用括号的场景描写", () => {
+    const input = "（歪头想了想）被你一说，我愣了一下。 然后慢吞吞地打字： 唔...好吧";
+    const result = cleanAssistantText(input);
+    expect(result).toBe("唔...好吧");
+  });
 });

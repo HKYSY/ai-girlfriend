@@ -21,7 +21,9 @@ interface Props {
 // 过滤 AI 回复中的括号场景/动作/情绪注释
 export function cleanAssistantText(text: string): string {
   return text
+    // 只保留原有的全角括号过滤逻辑
     .replace(/（[^\n（）a-zA-Z0-9]{1,100}）/g, "")
+    // 清理多余空格
     .replace(/\s{2,}/g, " ")
     .trim();
 }
