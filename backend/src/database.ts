@@ -51,6 +51,7 @@ export interface DBMessage {
   role: string;
   content: string;
   createdAt: string;
+  hidden: number; // 0=正常显示, 1=前端隐藏（互动消息等）
 }
 
 export interface DBConversationMeta {
@@ -59,6 +60,7 @@ export interface DBConversationMeta {
   lastActiveTime: string | null;
   summary: string | null;
   summaryUpTo: number;
+  lastDailyGreetingDate: string | null; // YYYY-MM-DD，每天首次问候标记
 }
 
 export interface DBMemoryFact {
@@ -438,33 +440,48 @@ export const dbCharacters = {
 
 // ========== 消息操作（永久保留 + 分页）==========
 export const dbMessages = {
-  addUser: (characterId: string, content: string) => {
-    return db.prepare("INSERT INTO messages (characterId, role, content, createdAt) VALUES (?, 'user', ?, ?)").run(characterId, content, new Date().toISOString());
+  addUser: (characterId: string, content: string, hidden: number = 0) => {
+    return db.prepare("INSERT INTO messages (characterId, role, content, createdAt, hidden) VALUES (?, 'user', ?, ?, ?)").run(characterId, content, new Date().toISOString(), hidden);
   },
-  addAssistant: (characterId: string, content: string) => {
-    return db.prepare("INSERT INTO messages (characterId, role, content, createdAt) VALUES (?, 'assistant', ?, ?)").run(characterId, content, new Date().toISOString());
+  addAssistant: (characterId: string, content: string, hidden: number = 0) => {
+    return db.prepare("INSERT INTO messages (characterId, role, content, createdAt, hidden) VALUES (?, 'assistant', ?, ?, ?)").run(characterId, content, new Date().toISOString(), hidden);
   },
   countByCharacter: (characterId: string) => {
     return (db.prepare("SELECT COUNT(*) as cnt FROM messages WHERE characterId = ?").get(characterId) as { cnt: number }).cnt;
   },
-  getRecent: (characterId: string, limit: number) => {
-    return db.prepare("SELECT * FROM (SELECT * FROM messages WHERE characterId = ? ORDER BY id DESC LIMIT ?) ORDER BY id ASC")
+  getRecent: (characterId: string, limit: number, includeHidden: boolean = false) => {
+    if (includeHidden) {
+      return db.prepare("SELECT * FROM (SELECT * FROM messages WHERE characterId = ? ORDER BY id DESC LIMIT ?) ORDER BY id ASC")
+        .all(characterId, limit) as DBMessage[];
+    }
+    return db.prepare("SELECT * FROM (SELECT * FROM messages WHERE characterId = ? AND (hidden IS NULL OR hidden = 0) AND NOT (role = 'user' AND content LIKE '（互动）%') ORDER BY id DESC LIMIT ?) ORDER BY id ASC")
       .all(characterId, limit) as DBMessage[];
   },
-  getAfterId: (characterId: string, afterId: number, limit: number) => {
-    return db.prepare("SELECT * FROM messages WHERE characterId = ? AND id > ? ORDER BY id ASC LIMIT ?")
+  getAfterId: (characterId: string, afterId: number, limit: number, includeHidden: boolean = false) => {
+    if (includeHidden) {
+      return db.prepare("SELECT * FROM messages WHERE characterId = ? AND id > ? ORDER BY id ASC LIMIT ?")
+        .all(characterId, afterId, limit) as DBMessage[];
+    }
+    return db.prepare("SELECT * FROM messages WHERE characterId = ? AND id > ? AND (hidden IS NULL OR hidden = 0) AND NOT (role = 'user' AND content LIKE '（互动）%') ORDER BY id ASC LIMIT ?")
       .all(characterId, afterId, limit) as DBMessage[];
   },
-  getBeforeId: (characterId: string, beforeId: number, limit: number) => {
-    return db.prepare("SELECT * FROM (SELECT * FROM messages WHERE characterId = ? AND id < ? ORDER BY id DESC LIMIT ?) ORDER BY id ASC")
+  getBeforeId: (characterId: string, beforeId: number, limit: number, includeHidden: boolean = false) => {
+    if (includeHidden) {
+      return db.prepare("SELECT * FROM (SELECT * FROM messages WHERE characterId = ? AND id < ? ORDER BY id DESC LIMIT ?) ORDER BY id ASC")
+        .all(characterId, beforeId, limit) as DBMessage[];
+    }
+    return db.prepare("SELECT * FROM (SELECT * FROM messages WHERE characterId = ? AND id < ? AND (hidden IS NULL OR hidden = 0) AND NOT (role = 'user' AND content LIKE '（互动）%') ORDER BY id DESC LIMIT ?) ORDER BY id ASC")
       .all(characterId, beforeId, limit) as DBMessage[];
   },
   getLastId: (characterId: string) => {
     const row = db.prepare("SELECT MAX(id) as maxId FROM messages WHERE characterId = ?").get(characterId) as { maxId: number | null };
     return row?.maxId || 0;
   },
-  getAll: (characterId: string) => {
-    return db.prepare("SELECT * FROM messages WHERE characterId = ? ORDER BY id ASC").all(characterId) as DBMessage[];
+  getAll: (characterId: string, includeHidden: boolean = false) => {
+    if (includeHidden) {
+      return db.prepare("SELECT * FROM messages WHERE characterId = ? ORDER BY id ASC").all(characterId) as DBMessage[];
+    }
+    return db.prepare("SELECT * FROM messages WHERE characterId = ? AND (hidden IS NULL OR hidden = 0) AND NOT (role = 'user' AND content LIKE '（互动）%') ORDER BY id ASC").all(characterId) as DBMessage[];
   },
   search: (characterId: string, query: string, limit: number = 10) => {
     return db.prepare("SELECT * FROM messages WHERE characterId = ? AND content LIKE ? ORDER BY id DESC LIMIT ?")
@@ -472,6 +489,9 @@ export const dbMessages = {
   },
   deleteByCharacter: (characterId: string) => {
     return db.prepare("DELETE FROM messages WHERE characterId = ?").run(characterId);
+  },
+  countByCharacterVisible: (characterId: string) => {
+    return (db.prepare("SELECT COUNT(*) as cnt FROM messages WHERE characterId = ? AND (hidden IS NULL OR hidden = 0) AND NOT (role = 'user' AND content LIKE '（互动）%')").get(characterId) as { cnt: number }).cnt;
   },
 };
 
@@ -481,8 +501,8 @@ export const dbConvMeta = {
     return db.prepare("SELECT * FROM conversation_meta WHERE characterId = ?").get(characterId) as DBConversationMeta | undefined;
   },
   upsert: (meta: DBConversationMeta) => {
-    db.prepare(`INSERT OR REPLACE INTO conversation_meta (characterId, lastMood, lastActiveTime, summary, summaryUpTo)
-      VALUES (?, ?, ?, ?, ?)`).run(meta.characterId, meta.lastMood, meta.lastActiveTime, meta.summary, meta.summaryUpTo);
+    db.prepare(`INSERT OR REPLACE INTO conversation_meta (characterId, lastMood, lastActiveTime, summary, summaryUpTo, lastDailyGreetingDate)
+      VALUES (?, ?, ?, ?, ?, ?)`).run(meta.characterId, meta.lastMood, meta.lastActiveTime, meta.summary, meta.summaryUpTo, meta.lastDailyGreetingDate || null);
   },
   delete: (characterId: string) => {
     db.prepare("DELETE FROM conversation_meta WHERE characterId = ?").run(characterId);
@@ -686,6 +706,10 @@ export { db };
 initDatabase();
 // 迁移：为旧库添加 avatarUrl 列（已存在则忽略）
 try { db.exec("ALTER TABLE characters ADD COLUMN avatarUrl TEXT DEFAULT ''"); } catch { /* 列已存在 */ }
+// 迁移：为消息表添加 hidden 列（互动消息标记，前端不显示）
+try { db.exec("ALTER TABLE messages ADD COLUMN hidden INTEGER DEFAULT 0"); } catch { /* 列已存在 */ }
+// 迁移：为对话元信息添加 lastDailyGreetingDate 列
+try { db.exec("ALTER TABLE conversation_meta ADD COLUMN lastDailyGreetingDate TEXT DEFAULT NULL"); } catch { /* 列已存在 */ }
 // 规范化历史消息时间戳（修复时区格式，使日记按本地日期正确归属）
 normalizeMessageTimestamps();
 

@@ -56,7 +56,8 @@ export default function ChatInput({ onSend, onSendSticker, disabled }: Props) {
           onClose={() => setShowStickers(false)}
         />
       )}
-      <div className="input-actions">
+      {/* 表情包按钮暂时禁用，后续升级优化 */}
+      {/* <div className="input-actions">
         <Button
           type="text"
           size="large"
@@ -66,7 +67,7 @@ export default function ChatInput({ onSend, onSendSticker, disabled }: Props) {
           title="表情包"
           className="sticker-btn"
         />
-      </div>
+      </div> */}
       <TextArea
         value={text}
         placeholder="跟她说点什么…"

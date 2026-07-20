@@ -23,14 +23,16 @@ function moodToColor(mood: number): string {
   return "#5c6bc0";
 }
 
-// 时间戳 → 简短显示
-function formatTime(t: number): string {
+// 时间戳 → 简短显示（根据天数范围调整格式）
+function formatTime(t: number, days: number): string {
   const d = new Date(t);
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
   const hh = String(d.getHours()).padStart(2, "0");
   const mi = String(d.getMinutes()).padStart(2, "0");
-  return `${mm}-${dd} ${hh}:${mi}`;
+  // 7天以上只显示月-日，1天显示时:分
+  if (days >= 7) return `${mm}-${dd}`;
+  return `${hh}:${mi}`;
 }
 
 export default function MoodHistoryChart({ characterId }: MoodHistoryChartProps) {
@@ -58,7 +60,7 @@ export default function MoodHistoryChart({ characterId }: MoodHistoryChartProps)
   // 转换为 recharts 数据格式
   const chartData = history.map((p) => ({
     time: p.t,
-    timeLabel: formatTime(p.t),
+    timeLabel: formatTime(p.t, days),
     mood: p.mood,
   }));
 
@@ -119,8 +121,8 @@ export default function MoodHistoryChart({ characterId }: MoodHistoryChartProps)
                 tick={{ fontSize: 9, fill: "#999" }}
                 tickLine={false}
                 axisLine={{ stroke: "#eee" }}
-                interval="preserveStartEnd"
-                minTickGap={30}
+                interval={days >= 7 ? "preserveStartEnd" : 0}
+                minTickGap={20}
               />
               <YAxis
                 domain={[0, 100]}

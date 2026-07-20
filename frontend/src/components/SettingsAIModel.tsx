@@ -11,25 +11,28 @@ interface Props {
   onUpdated: (char: Character) => void;
 }
 
-// 服务商预设：推荐模型 + 申请地址
-const PROVIDER_PRESETS: Record<string, { models: string[]; applyUrl: string; applyLabel: string; defaultModel: string }> = {
+// 服务商预设：推荐模型 + 申请地址 + 默认API地址
+const PROVIDER_PRESETS: Record<string, { models: string[]; applyUrl: string; applyLabel: string; defaultModel: string; defaultUrl: string }> = {
   deepseek: {
     models: ["deepseek-chat", "deepseek-v4-flash"],
     applyUrl: "https://platform.deepseek.com/api-keys",
     applyLabel: "DeepSeek 开放平台",
     defaultModel: "deepseek-chat",
+    defaultUrl: "https://api.deepseek.com/v1/chat/completions",
   },
   openai: {
     models: ["gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"],
     applyUrl: "https://platform.openai.com/api-keys",
     applyLabel: "OpenAI 平台",
     defaultModel: "gpt-4o-mini",
+    defaultUrl: "https://api.openai.com/v1/chat/completions",
   },
   custom: {
     models: [],
     applyUrl: "",
     applyLabel: "",
     defaultModel: "",
+    defaultUrl: "",
   },
 };
 
@@ -54,13 +57,13 @@ export default function SettingsAIModel({ character, onUpdated }: Props) {
     if (!apiModel.trim() && PROVIDER_PRESETS[v]?.defaultModel) {
       setApiModel(PROVIDER_PRESETS[v].defaultModel);
     }
+    // 切换服务商时，若API地址为空则填入默认地址
+    if (!apiUrl.trim() && PROVIDER_PRESETS[v]?.defaultUrl) {
+      setApiUrl(PROVIDER_PRESETS[v].defaultUrl);
+    }
   };
 
   const handleSave = async () => {
-    if (provider === "custom" && !apiUrl.trim()) {
-      message.warning("自定义模式下请填写 API 地址");
-      return;
-    }
     if (apiKey.trim() && !apiKey.trim().startsWith("sk-") && provider === "deepseek") {
       setKeyError("DeepSeek API Key 通常以 sk- 开头，请检查");
       return;
@@ -84,7 +87,7 @@ export default function SettingsAIModel({ character, onUpdated }: Props) {
   };
 
   const handleTest = async () => {
-    if (provider === "custom" && !apiUrl.trim()) {
+    if (!apiUrl.trim() && !preset.defaultUrl) {
       message.warning("请先填写 API 地址");
       return;
     }
@@ -200,16 +203,19 @@ export default function SettingsAIModel({ character, onUpdated }: Props) {
           )}
         </div>
 
-        {provider === "custom" && (
-          <div className="settings-field">
-            <label className="settings-field-label">API 地址 <Text type="danger" style={{ fontSize: 11 }}>*</Text></label>
-            <Input
-              value={apiUrl}
-              onChange={(e) => { setApiUrl(e.target.value); setTestResult(null); }}
-              placeholder="https://your-api.com/v1/chat/completions"
-            />
-          </div>
-        )}
+        <div className="settings-field">
+          <label className="settings-field-label">API 地址</label>
+          <Input
+            value={apiUrl}
+            onChange={(e) => { setApiUrl(e.target.value); setTestResult(null); }}
+            placeholder={preset.defaultUrl || "https://your-api.com/v1/chat/completions"}
+          />
+          <Text type="secondary" style={{ fontSize: 11, display: "block", marginTop: 2 }}>
+            {provider === "deepseek" ? "默认 DeepSeek 官方地址，可改为代理地址" :
+             provider === "openai" ? "默认 OpenAI 官方地址，可改为代理地址" :
+             "填写兼容 OpenAI 格式的 API 地址"}
+          </Text>
+        </div>
       </div>
 
       {/* 测试连接 */}

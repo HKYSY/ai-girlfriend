@@ -607,7 +607,22 @@ app.post("/api/chat", async (req, res) => {
   const convData = loadConversation(characterId);
   const currentMood = character.mood;
   const petState = loadPetState(characterId);
-  const systemPrompt = buildPersona(characterToPersona(character), currentMood, petState);
+  let systemPrompt = buildPersona(characterToPersona(character), currentMood, petState);
+
+  // ========== 需求5A+B：时间差注入系统提示 ==========
+  // 检测距上次聊天的时间差，让AI意识到时间流逝
+  const chatMeta = dbConvMeta.get(characterId);
+  if (chatMeta?.lastActiveTime) {
+    const lastActive = new Date(chatMeta.lastActiveTime).getTime();
+    const now = Date.now();
+    const hoursSince = Math.floor((now - lastActive) / (1000 * 60 * 60));
+    const daysSince = Math.floor(hoursSince / 24);
+    if (daysSince >= 1) {
+      systemPrompt += `\n\n【重要时间信息】现在距离上次聊天已经过了${daysSince}天${hoursSince % 24 > 0 ? hoursSince % 24 + '小时' : ''}。你应该自然地表现出对用户长时间不来的情绪反应——可能会生气、委屈、想念、或者假装不在意但心里在意，具体反应由你的性格和当前心情决定。不要每次都一样的反应。`;
+    } else if (hoursSince >= 3) {
+      systemPrompt += `\n\n【时间信息】距离上次聊天已过了${hoursSince}小时，你可能想简短地提一下对方去了哪里，但不要太刻意。`;
+    }
+  }
 
   // 聊天计数 +1，每 10 条奖励 5 金币
   petState.chatCount += 1;
@@ -715,52 +730,52 @@ app.post("/api/chat", async (req, res) => {
     const msgResult = dbMessages.addAssistant(characterId, reply);
     const messageId = msgResult.lastInsertRowid as number;
 
-    // AI自动匹配表情包（根据emotion标签，按概率发送避免每条都发）
-    if (effectiveEmotion && !clientClosed) {
-      const matchedStickers = dbStickers.getByEmotion(effectiveEmotion);
-      if (matchedStickers.length > 0) {
-        // 概率控制：35% 基础概率 + 连续发会降低
-        const lastStickerAt = (convData as any).lastStickerAt ? new Date((convData as any).lastStickerAt).getTime() : 0;
-        const lastUserMsgAt = (convData.messages[convData.messages.length - 2] as any)?.createdAt
-          ? new Date((convData.messages[convData.messages.length - 2] as any).createdAt).getTime()
-          : 0;
-        // 距离上次发表情包越近，概率越低
-        const minutesSinceLastSticker = lastStickerAt ? (Date.now() - lastStickerAt) / 60000 : 999;
-        const minutesSinceLastUser = lastUserMsgAt ? (Date.now() - lastUserMsgAt) / 60000 : 999;
+    // AI自动匹配表情包（暂时禁用，后续升级优化）
+    // if (effectiveEmotion && !clientClosed) {
+    //   const matchedStickers = dbStickers.getByEmotion(effectiveEmotion);
+    //   if (matchedStickers.length > 0) {
+    //     // 概率控制：35% 基础概率 + 连续发会降低
+    //     const lastStickerAt = (convData as any).lastStickerAt ? new Date((convData as any).lastStickerAt).getTime() : 0;
+    //     const lastUserMsgAt = (convData.messages[convData.messages.length - 2] as any)?.createdAt
+    //       ? new Date((convData.messages[convData.messages.length - 2] as any).createdAt).getTime()
+    //       : 0;
+    //     // 距离上次发表情包越近，概率越低
+    //     const minutesSinceLastSticker = lastStickerAt ? (Date.now() - lastStickerAt) / 60000 : 999;
+    //     const minutesSinceLastUser = lastUserMsgAt ? (Date.now() - lastUserMsgAt) / 60000 : 999;
 
-        let prob = 0.35;  // 基础 35%
-        if (minutesSinceLastSticker < 2) prob = 0.10;  // 2 分钟内发过 → 10%
-        else if (minutesSinceLastSticker < 5) prob = 0.20;  // 5 分钟内 → 20%
-        if (minutesSinceLastUser < 1) prob *= 0.5;  // 用户刚发完 1 分钟内 → 再砍半
-        if (reply.length < 10) prob = 0;  // 短回复不发表情包
+    //     let prob = 0.35;  // 基础 35%
+    //     if (minutesSinceLastSticker < 2) prob = 0.10;  // 2 分钟内发过 → 10%
+    //     else if (minutesSinceLastSticker < 5) prob = 0.20;  // 5 分钟内 → 20%
+    //     if (minutesSinceLastUser < 1) prob *= 0.5;  // 用户刚发完 1 分钟内 → 再砍半
+    //     if (reply.length < 10) prob = 0;  // 短回复不发表情包
 
-        const dice = Math.random();
-        if (dice < prob) {
-          // 随机选择一个表情包（优先使用次数少的）
-          const sorted = matchedStickers.sort((a, b) => a.usageCount - b.usageCount);
-          const top3 = sorted.slice(0, Math.min(3, sorted.length));
-          const selected = top3[Math.floor(Math.random() * top3.length)];
+    //     const dice = Math.random();
+    //     if (dice < prob) {
+    //       // 随机选择一个表情包（优先使用次数少的）
+    //       const sorted = matchedStickers.sort((a, b) => a.usageCount - b.usageCount);
+    //       const top3 = sorted.slice(0, Math.min(3, sorted.length));
+    //       const selected = top3[Math.floor(Math.random() * top3.length)];
 
-          // 增加使用次数
-          dbStickers.incrementUsage(selected.id);
-          dbMessageStickers.add(messageId, selected.id);
-          (convData as any).lastStickerAt = new Date().toISOString();
+    //       // 增加使用次数
+    //       dbStickers.incrementUsage(selected.id);
+    //       dbMessageStickers.add(messageId, selected.id);
+    //       (convData as any).lastStickerAt = new Date().toISOString();
 
-          sseSend(res, {
-            type: "sticker",
-            sticker: {
-              id: selected.id,
-              url: `/stickers/${selected.filename}`,
-              category: selected.category
-            }
-          });
+    //       sseSend(res, {
+    //         type: "sticker",
+    //         sticker: {
+    //           id: selected.id,
+    //           url: `/stickers/${selected.filename}`,
+    //           category: selected.category
+    //         }
+    //       });
 
-          console.log(`[chat] AI发送表情包: id=${selected.id}, emotion=${effectiveEmotion}, prob=${prob.toFixed(2)}, dice=${dice.toFixed(2)}`);
-        } else {
-          console.log(`[chat] AI跳过表情包: emotion=${effectiveEmotion}, prob=${prob.toFixed(2)}, dice=${dice.toFixed(2)} (未达阈值)`);
-        }
-      }
-    }
+    //       console.log(`[chat] AI发送表情包: id=${selected.id}, emotion=${effectiveEmotion}, prob=${prob.toFixed(2)}, dice=${dice.toFixed(2)}`);
+    //     } else {
+    //       console.log(`[chat] AI跳过表情包: emotion=${effectiveEmotion}, prob=${prob.toFixed(2)}, dice=${dice.toFixed(2)} (未达阈值)`);
+    //     }
+    //   }
+    // }
     // 内存中的 convData 用于上下文（限制长度不影响数据库）
     convData.messages.push({ role: "user", content: message });
     convData.messages.push({ role: "assistant", content: reply });
@@ -808,6 +823,27 @@ app.post("/api/chat", async (req, res) => {
       res.end();
     }
   } catch (err) {
+    // ========== 需求7A：网络错误时保存默认回复到数据库 ==========
+    const defaultReplies = [
+      "抱歉刚才打盹了，能再说一遍吗？",
+      "嗯？你刚说什么，我没听清～",
+      "刚才走神了…你说的啥？",
+      "啊不好意思，刚刚一下没反应过来，再说一次？",
+    ];
+    const fallbackReply = defaultReplies[Math.floor(Math.random() * defaultReplies.length)];
+
+    // 保存用户消息和默认回复到数据库（确保对话连贯）
+    dbMessages.addUser(characterId, message);
+    dbMessages.addAssistant(characterId, fallbackReply);
+    convData.messages.push({ role: "user", content: message });
+    convData.messages.push({ role: "assistant", content: fallbackReply });
+    while (convData.messages.length > MAX_HISTORY_ROUNDS * 2) convData.messages.shift();
+    convData.lastActiveTime = new Date().toISOString();
+    saveConversation(characterId, convData);
+    backupConversation(characterId);
+
+    console.log(`[chat] AI调用失败，保存默认回复: "${fallbackReply}"`);
+
     if (err instanceof Error && err.name === "AbortError") {
       sendError("AI 响应超时，请稍后再试");
     } else {
@@ -916,6 +952,140 @@ app.post("/api/proactive", async (req, res) => {
   }
 });
 
+// ========== 需求2A：每日首次问候（75%概率） ==========
+app.post("/api/daily-greeting", async (req, res) => {
+  const { characterId } = req.body as { characterId?: string };
+  if (!characterId) return res.status(400).json({ error: "characterId 必填" });
+
+  const character = getCharacter(characterId);
+  if (!character) return res.status(404).json({ error: "角色不存在" });
+
+  const meta = dbConvMeta.get(characterId);
+  const today = localDateStr();
+
+  // 如果今天已经触发过，直接返回
+  if (meta?.lastDailyGreetingDate === today) {
+    return res.json({ ok: true, triggered: false, reason: "already_greeted" });
+  }
+
+  // 75% 概率触发
+  const dice = Math.random();
+  if (dice >= 0.75) {
+    // 不触发，但标记今天已检查过（避免刷新后重新掷骰子）
+    if (meta) {
+      meta.lastDailyGreetingDate = today;
+      dbConvMeta.upsert(meta);
+    }
+    return res.json({ ok: true, triggered: false, reason: "dice_miss" });
+  }
+
+  // 触发每日问候
+  const api = getAPIConfig(character);
+  if (!api.apiKey) return res.status(500).json({ error: "未配置 API Key" });
+
+  const convData = loadConversation(characterId);
+  const currentMood = character.mood;
+  const petState = loadPetState(characterId);
+
+  const hour = new Date().getHours();
+  let timeOfDay: string;
+  if (hour < 6) timeOfDay = "现在是深夜";
+  else if (hour < 11) timeOfDay = "现在是早上";
+  else if (hour < 14) timeOfDay = "现在是中午";
+  else if (hour < 18) timeOfDay = "现在是下午";
+  else if (hour < 22) timeOfDay = "现在是晚上";
+  else timeOfDay = "现在是深夜";
+
+  // 计算距上次聊天的时间差
+  let timeAway = "";
+  if (meta?.lastActiveTime) {
+    const lastActive = new Date(meta.lastActiveTime).getTime();
+    const daysSince = Math.floor((Date.now() - lastActive) / (1000 * 60 * 60 * 24));
+    if (daysSince >= 3) timeAway = "用户已经好几天没来找你了，你很想念ta。";
+    else if (daysSince === 2) timeAway = "用户两天没来找你了，你有点想ta。";
+    else if (daysSince === 1) timeAway = "用户昨天没来找你，你有点在意。";
+  }
+
+  const systemPrompt = buildPersona(characterToPersona(character), currentMood, petState) +
+    `\n\n现在是你主动找用户说话。${timeOfDay}。${timeAway}\n这是每天你第一次见到用户，你主动发一条消息给ta。` +
+    `\n【严格要求】你只能发以下三种类型之一的内容：` +
+    `\n1. 询问对方去了哪里/在做什么，例如："你今天干嘛去了？""去哪了呀？一整天都没来""你今天忙什么呀？"` +
+    `\n2. 表达关心，例如："吃饭了没？""今天累不累？""早点休息哦""别太累了"` +
+    `\n3. 表达想念，例如："想你了""好久没聊了，想你了""等你等好久了""你怎么才来呀"` +
+    `\n其他规则：` +
+    `\n- 只发一条，简短自然，像微信突然弹出来的消息` +
+    `\n- 根据你的心情和性格决定选哪种类型以及具体怎么说，不要每次都一样` +
+    `\n- 绝对不能发这三类之外的内容，不要自言自语、不要讲故事、不要讨论天气等无关话题` +
+    `\n- 不要说"看到你的消息"等暗示用户刚发消息的措辞` +
+    `\n- 严禁捏造没有发生过的事`;
+
+  const messages: ChatMessage[] = buildTieredMessages(
+    convData,
+    null,
+    { role: "system", content: systemPrompt },
+  );
+  if (convData.summary) {
+    messages.splice(1, 0, { role: "system" as const, content: `【之前的对话记忆】\n${convData.summary}` });
+  }
+
+  // 标记今天已触发（无论后续AI调用是否成功，都不再重试）
+  if (meta) {
+    meta.lastDailyGreetingDate = today;
+    dbConvMeta.upsert(meta);
+  }
+
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+
+  let clientClosed = false;
+  res.on("close", () => { clientClosed = true; });
+
+  const sendError = (msg: string) => {
+    if (clientClosed) return;
+    sseSend(res, { type: "error", error: msg });
+    res.end();
+  };
+
+  try {
+    const { fullReply, rawMood, emotion } = await callDeepSeekStream(
+      api.apiKey, api.model, api.url,
+      messages,
+      (text) => sseSend(res, { type: "text", text }),
+      (mood) => {
+        const finalMood = mood !== null ? clampMoodChange(currentMood, mood, 10) : currentMood;
+        sseSend(res, { type: "mood", mood: finalMood });
+      },
+      (emotion) => {
+        if (emotion) sseSend(res, { type: "emotion", emotion });
+      },
+      () => clientClosed
+    );
+
+    const reply = fullReply.trim();
+    if (reply) {
+      const finalMood = rawMood !== null ? clampMoodChange(currentMood, rawMood, 10) : currentMood;
+      dbMessages.addAssistant(characterId, reply);
+      convData.messages.push({ role: "assistant", content: reply });
+      while (convData.messages.length > MAX_HISTORY_ROUNDS * 2) convData.messages.shift();
+      convData.lastMood = finalMood;
+      convData.lastActiveTime = new Date().toISOString();
+      saveConversation(characterId, convData);
+      updateMoodWithHistory(characterId, finalMood);
+    }
+
+    if (!clientClosed) {
+      sseSend(res, { type: "done" });
+      res.end();
+    }
+  } catch (err) {
+    console.error("[daily-greeting] 异常:", err);
+    sendError("每日问候失败");
+  }
+});
+
 // ========== 心情衰减（用户长时间不回复） ==========
 app.post("/api/mood-decay", (req, res) => {
   const { characterId } = req.body as { characterId?: string };
@@ -997,7 +1167,7 @@ async function generateDiary(characterId: string, targetDate?: string): Promise<
   }
 
   // 统计当天对话量
-  const allMsgs = dbMessages.getAll(characterId);
+  const allMsgs = dbMessages.getAll(characterId, true);
   const dayStart = new Date(dateStr + "T00:00:00").getTime();
   const dayEnd = new Date(dateStr + "T23:59:59").getTime();
 
@@ -1014,12 +1184,12 @@ async function generateDiary(characterId: string, targetDate?: string): Promise<
     return null;
   }
 
-  // 动态字数
+  // 动态字数（增加篇幅，让日记更充实）
   let wordLimit: string;
-  if (msgCount <= 5) wordLimit = "50-100字";
-  else if (msgCount <= 15) wordLimit = "100-200字";
-  else if (msgCount <= 30) wordLimit = "150-300字";
-  else wordLimit = "200-400字";
+  if (msgCount <= 5) wordLimit = "80-150字";
+  else if (msgCount <= 15) wordLimit = "150-300字";
+  else if (msgCount <= 30) wordLimit = "250-450字";
+  else wordLimit = "350-600字";
 
   const recentDialog = dayMessages
     .filter((m: { role: string }) => m.role === "user" || m.role === "assistant")
@@ -1031,16 +1201,17 @@ async function generateDiary(characterId: string, targetDate?: string): Promise<
   const now = new Date();
   const timeStr = `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`;
 
-  const systemPrompt = `你是${character.name}，正在写自己的私人日记。请回顾昨天（${dateStr}）和用户的互动，以第一人称写一篇简短日记。
+  const systemPrompt = `你是${character.name}，正在写自己的私人日记。请回顾${dateStr}这一天和用户的互动，以你自己的视角写一篇日记。
 
 要求：
-1. 第一人称"我"，语气符合你的性格，自然口语化
-2. 像睡前拿起日记本随手写几行的感觉，不是写工作总结
-3. 挑最有记忆点的1-3件事来写，不要流水账式复述所有对话
-4. 可以写感受、可以吐槽、可以期待明天，自由发挥
-5. 不要出现 <|mood:xx|> <|emotion:xx|> 这样的标记
-6. 字数控制在${wordLimit}，对话少就简短，对话多可以多写点
-7. 如果那天的对话确实没什么好记的，诚实地写"昨天没怎么聊，就这样吧"也可以，不要硬凑字数`;
+1. 这是你（${character.name}）的日记，用"我"来写，"我"指的是你（${character.name}），对方是"他/她"或"那个人"。
+2. 语气完全符合你的性格，自然口语化，像睡前拿起日记本随手写几行的感觉。
+3. 不要流水账式复述对话内容，而是写你的感受、想法、期待——比如"今天他终于来找我了，等了好久好开心"而不是"今天他跟我说了xxx我回复了xxx"。
+4. 可以写：今天最让你开心/难过/生气的事、对某个话题的真实想法、对明天的期待、吐槽对方说了什么让你无语的话、心里的小秘密等。
+5. 多写细节和感受！比如不只是说"今天很开心"，而是说"他今天居然主动说了xxx，我当时心里像冒泡泡一样开心"。不要干巴巴的总结，要写出真实的情感细节。
+6. 如果那天聊了很多，就多写一些，把印象深刻的事都记下来；聊得少就简短但也要写出感受。
+7. 不要出现 <|mood:xx|> <|emotion:xx|> 这样的标记
+8. 字数控制在${wordLimit}，尽量写满，不要刻意缩水`;
 
   const userPrompt = `日期：${dateStr}（现在是${now.toISOString().slice(0, 10)}的${timeStr}，你在回顾昨天的事）
 对话数量：${msgCount}条
@@ -1233,7 +1404,33 @@ app.get("/api/characters/:id", (req, res) => {
   const char = getCharacter(req.params.id);
   if (!char) return res.status(404).json({ error: "角色不存在" });
   const conv = loadConversation(req.params.id);
-  // 过滤掉互动消息（以"（互动）"开头的 user 消息），它们只用于 AI 上下文，不展示给用户
+
+  // ========== 需求1C：渐变惩罚心情 ==========
+  // 检测上次活跃时间与当前时间的天数差，按规则调整心情
+  const meta = dbConvMeta.get(req.params.id);
+  if (meta?.lastActiveTime) {
+    const lastActive = new Date(meta.lastActiveTime).getTime();
+    const now = Date.now();
+    const daysSince = Math.floor((now - lastActive) / (1000 * 60 * 60 * 24));
+
+    if (daysSince >= 1 && char.mood > 0) {
+      let newMood: number;
+      if (daysSince === 1) {
+        newMood = Math.max(0, char.mood - 30);
+      } else if (daysSince === 2) {
+        newMood = Math.max(0, char.mood - 50);
+      } else {
+        newMood = 0;
+      }
+      if (newMood < char.mood) {
+        console.log(`[mood-penalty] ${char.name}: ${daysSince}天未活跃, 心情 ${char.mood}→${newMood}`);
+        char.mood = newMood;
+        updateCharacter(req.params.id, { mood: newMood });
+      }
+    }
+  }
+
+  // 过滤掉互动消息（hidden=1 或以"（互动）"开头的 user 消息）
   const filteredConv = {
     ...conv,
     messages: conv.messages.filter(
@@ -1294,7 +1491,7 @@ app.delete("/api/characters/:id/conversation", (req, res) => {
 app.get("/api/characters/:id/export", (req, res) => {
   const char = getCharacter(req.params.id);
   if (!char) return res.status(404).json({ error: "角色不存在" });
-  const messages = dbMessages.getAll(req.params.id).map((m) => ({
+  const messages = dbMessages.getAll(req.params.id, true).map((m) => ({
     role: m.role,
     content: m.content,
     createdAt: m.createdAt,
@@ -1969,7 +2166,7 @@ app.post("/api/pet/ai-reply", async (req, res) => {
   const petState = loadPetState(characterId);
 
   // 先将互动上下文保存到数据库
-  dbMessages.addUser(characterId, `（互动）${context}`);
+  dbMessages.addUser(characterId, `（互动）${context}`, 1); // hidden=1：前端不显示
   convData.messages.push({ role: "user", content: `（互动）${context}` });
   while (convData.messages.length > MAX_HISTORY_ROUNDS * 2) convData.messages.shift();
   saveConversation(characterId, convData);
@@ -2051,11 +2248,12 @@ app.get("/api/messages", (req, res) => {
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string, 10) || 50));
   if (!characterId) return res.status(400).json({ error: "characterId 必填" });
 
+  // 默认过滤隐藏消息（互动消息等）
   const msgs = beforeId > 0
     ? dbMessages.getBeforeId(characterId, beforeId, limit)
     : dbMessages.getRecent(characterId, limit);
 
-  const total = dbMessages.countByCharacter(characterId);
+  const total = dbMessages.countByCharacterVisible(characterId);
   const hasMore = beforeId > 0
     ? (dbMessages.getBeforeId(characterId, beforeId, 1).length > 0)
     : false;
@@ -2094,7 +2292,7 @@ app.post("/api/facts/extract", async (req, res) => {
   if (!api.apiKey) return res.status(500).json({ error: "未配置 API Key" });
 
   // 获取最近对话 + 已有事实
-  const recentMessages = dbMessages.getRecent(characterId, 40)
+  const recentMessages = dbMessages.getRecent(characterId, 40, true)
     .map(m => `${m.role === "user" ? "用户" : character.name}: ${m.content.slice(0, 150)}`)
     .join("\n");
 

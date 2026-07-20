@@ -509,6 +509,49 @@ export interface MoodPoint {
   mood: number; // 心情值 0-100
 }
 
+// ========== 每日首次问候 ==========
+export async function dailyGreeting(characterId: string): Promise<{
+  ok: boolean;
+  triggered: boolean;
+  reason?: string;
+}> {
+  const res = await fetch("/api/daily-greeting", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ characterId }),
+  });
+  if (!res.ok) throw new Error("每日问候请求失败");
+  // 如果是JSON响应（未触发），直接返回
+  const contentType = res.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    return res.json();
+  }
+  // SSE响应（已触发），返回triggered=true让前端用consumeSSE处理
+  return { ok: true, triggered: true };
+}
+
+// ========== 每日首次问候（SSE流式） ==========
+export async function streamDailyGreeting(
+  characterId: string,
+  callbacks: StreamCallbacks
+): Promise<void> {
+  const res = await fetch("/api/daily-greeting", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ characterId }),
+  });
+  const contentType = res.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    // 未触发，直接解析JSON
+    const data = await res.json();
+    if (!data.triggered) {
+      callbacks.onDone();
+      return;
+    }
+  }
+  await consumeSSE(res, callbacks);
+}
+
 // 获取心情历史
 export async function getMoodHistory(characterId: string, days: number = 7): Promise<{
   ok: boolean;

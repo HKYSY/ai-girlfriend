@@ -12,6 +12,7 @@ import {
   streamChat,
   streamProactive,
   streamPetAIReply,
+  streamDailyGreeting,
   moodDecay,
   petDecay,
   getCharacters,
@@ -234,6 +235,88 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentCharacter?.id]);
 
+  // ========== 需求2A：每日首次问候（75%概率） ==========
+  useEffect(() => {
+    if (!currentCharacter) return;
+    const timer = window.setTimeout(async () => {
+      try {
+        const res = await fetch("/api/daily-greeting", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ characterId: currentCharacter.id }),
+        });
+        const contentType = res.headers.get("content-type") || "";
+        // JSON响应 = 未触发（already_greeted 或 dice_miss），不做任何事
+        if (contentType.includes("application/json")) {
+          return;
+        }
+        // SSE响应 = 已触发，消费这个流的响应
+        assistantStartedRef.current = false;
+        setLoading(true);
+        const reader = res.body?.getReader();
+        if (!reader) return;
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const jsonStr = line.slice(6).trim();
+            if (!jsonStr || jsonStr === "[DONE]") continue;
+            try {
+              const data = JSON.parse(jsonStr);
+              if (data.type === "text") {
+                if (!assistantStartedRef.current) {
+                  assistantStartedRef.current = true;
+                  setMessages((prev) => [
+                    ...prev,
+                    { role: "assistant", content: data.text },
+                  ]);
+                } else {
+                  setMessages((prev) => {
+                    const last = prev[prev.length - 1];
+                    if (last && last.role === "assistant") {
+                      return [
+                        ...prev.slice(0, -1),
+                        { role: "assistant", content: last.content + data.text },
+                      ];
+                    }
+                    return prev;
+                  });
+                }
+              } else if (data.type === "mood") {
+                setMood(data.mood);
+                setCharacters((prev) =>
+                  prev.map((c) =>
+                    c.id === currentCharacter.id ? { ...c, mood: data.mood } : c
+                  )
+                );
+                setCurrentCharacter((prev) =>
+                  prev ? { ...prev, mood: data.mood } : prev
+                );
+              } else if (data.type === "emotion") {
+                setEmotion(data.emotion);
+              } else if (data.type === "done") {
+                setLoading(false);
+              } else if (data.type === "error") {
+                setLoading(false);
+              }
+            } catch { /* 忽略解析错误 */ }
+          }
+        }
+        setLoading(false);
+      } catch {
+        // 静默忽略
+      }
+    }, 3000);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentCharacter?.id]);
+
   // ========== 主动消息定时器 ==========
   useEffect(() => {
     if (!currentCharacter) return;
@@ -349,74 +432,103 @@ export default function App() {
     setLoading(true);
     assistantStartedRef.current = false;
 
+    // ========== 需求7A：前端SSE超时检测 ==========
+    const SSE_TIMEOUT = 30000; // 30秒超时
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const defaultReplies = [
+      "抱歉刚才打盹了，能再说一遍吗？",
+      "嗯？你刚说什么，我没听清～",
+      "刚才走神了…你说的啥？",
+      "啊不好意思，刚刚一下没反应过来，再说一次？",
+    ];
+
     try {
-      await streamChat(text, currentCharacter.id, {
-        onMood: (m) => {
-          setMood(m);
-          setCharacters((prev) =>
-            prev.map((c) =>
-              c.id === currentCharacter.id ? { ...c, mood: m } : c
-            )
-          );
-          setCurrentCharacter((prev) => (prev ? { ...prev, mood: m } : prev));
-        },
-        onEmotion: (emo) => setEmotion(emo),
-        onText: (chunk) => {
+      // 超时兜底：如果30秒内AI没有回复，显示默认回复
+      const timeoutPromise = new Promise<void>((resolve) => {
+        timeoutId = setTimeout(() => {
           if (!assistantStartedRef.current) {
+            const fallback = defaultReplies[Math.floor(Math.random() * defaultReplies.length)];
             assistantStartedRef.current = true;
             setMessages((prev) => [
               ...prev,
-              { role: "assistant", content: chunk },
+              { role: "assistant", content: fallback },
             ]);
             setLoading(false);
-          } else {
-            setMessages((prev) => {
-              const last = prev[prev.length - 1];
-              if (last && last.role === "assistant") {
-                return [
-                  ...prev.slice(0, -1),
-                  { role: "assistant", content: last.content + chunk },
-                ];
-              }
-              return prev;
-            });
+            console.log(`[chat] 前端超时，显示默认回复: "${fallback}"`);
           }
-        },
-        onPetState: (state, coinReward) => {
-          setPetState(state);
-          if (coinReward && coinReward > 0) {
-            // 聊天金币奖励提示（轻量，不弹消息，仅控制台日志）
-            console.log(`[pet] 聊天奖励 ${coinReward} 金币`);
-          }
-        },
-        onSticker: (sticker) => {
-          // AI发送表情包：添加到最后一条AI消息
-          setMessages((prev) => {
-            const last = prev[prev.length - 1];
-            if (last && last.role === "assistant") {
-              return [
-                ...prev.slice(0, -1),
-                { ...last, sticker },
-              ];
-            }
-            return prev;
-          });
-        },
-        onDone: () => setLoading(false),
-        onError: (err) => {
-          setLoading(false);
-          setMessages((prev) => [
-            ...prev,
-            { role: "assistant", content: `（${err}）` },
-          ]);
-        },
+          resolve();
+        }, SSE_TIMEOUT);
       });
+
+      await Promise.race([
+        streamChat(text, currentCharacter.id, {
+          onMood: (m) => {
+            setMood(m);
+            setCharacters((prev) =>
+              prev.map((c) =>
+                c.id === currentCharacter.id ? { ...c, mood: m } : c
+              )
+            );
+            setCurrentCharacter((prev) => (prev ? { ...prev, mood: m } : prev));
+          },
+          onEmotion: (emo) => setEmotion(emo),
+          onText: (chunk) => {
+            // 收到AI回复，清除超时
+            if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
+            if (!assistantStartedRef.current) {
+              assistantStartedRef.current = true;
+              setMessages((prev) => [
+                ...prev,
+                { role: "assistant", content: chunk },
+              ]);
+              setLoading(false);
+            } else {
+              setMessages((prev) => {
+                const last = prev[prev.length - 1];
+                if (last && last.role === "assistant") {
+                  return [
+                    ...prev.slice(0, -1),
+                    { role: "assistant", content: last.content + chunk },
+                  ];
+                }
+                return prev;
+              });
+            }
+          },
+          onPetState: (state, coinReward) => {
+            setPetState(state);
+            if (coinReward && coinReward > 0) {
+              console.log(`[pet] 聊天奖励 ${coinReward} 金币`);
+            }
+          },
+          onSticker: (sticker) => {
+            // AI发送表情包：添加到最后一条AI消息（暂时禁用）
+          },
+          onDone: () => {
+            if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
+            setLoading(false);
+          },
+          onError: (err) => {
+            if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
+            setLoading(false);
+            // 如果前端已经显示了默认回复，不再显示错误
+            if (assistantStartedRef.current) return;
+            setMessages((prev) => [
+              ...prev,
+              { role: "assistant", content: `（${err}）` },
+            ]);
+          },
+        }),
+        timeoutPromise,
+      ]);
     } catch {
+      if (timeoutId) clearTimeout(timeoutId);
       setLoading(false);
       if (!assistantStartedRef.current) {
+        const fallback = defaultReplies[Math.floor(Math.random() * defaultReplies.length)];
         setMessages((prev) => [
           ...prev,
-          { role: "assistant", content: "（网络开小差了，再说一次好吗～）" },
+          { role: "assistant", content: fallback },
         ]);
       }
     }

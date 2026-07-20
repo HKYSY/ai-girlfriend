@@ -110,7 +110,7 @@ export function deleteCharacter(id: string): boolean {
 
 // ========== 对话管理（永久保留，不自动删除）==========
 export function loadConversation(characterId: string): ConversationData {
-  const msgs = dbMessages.getAll(characterId);
+  const msgs = dbMessages.getAll(characterId, true); // includeHidden=true：AI上下文需要包含互动消息
   const meta = dbConvMeta.get(characterId);
   return {
     messages: msgs.map(m => ({ role: m.role, content: m.content })),
@@ -123,12 +123,15 @@ export function loadConversation(characterId: string): ConversationData {
 
 export function saveConversation(characterId: string, data: ConversationData): void {
   // 消息已通过 dbMessages.addUser/addAssistant 实时写入，这里只更新元信息
+  // 保留已有的 lastDailyGreetingDate（不覆盖）
+  const existingMeta = dbConvMeta.get(characterId);
   dbConvMeta.upsert({
     characterId,
     lastMood: data.lastMood,
     lastActiveTime: data.lastActiveTime,
     summary: data.summary || null,
     summaryUpTo: data.summaryUpTo || 0,
+    lastDailyGreetingDate: existingMeta?.lastDailyGreetingDate || null,
   });
 }
 
