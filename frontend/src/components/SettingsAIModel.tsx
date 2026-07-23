@@ -78,9 +78,9 @@ export default function SettingsAIModel({ character, onUpdated }: Props) {
         apiUrl: apiUrl.trim(),
       } as any);
       onUpdated(updated);
-      message.success("AI 配置已保存");
+      message.success("配置已更新");
     } catch {
-      message.error("保存失败");
+      message.error("保存时遇到了问题");
     } finally {
       setSaving(false);
     }

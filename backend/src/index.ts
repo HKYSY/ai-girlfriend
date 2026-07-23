@@ -612,15 +612,25 @@ app.post("/api/chat", async (req, res) => {
   // ========== 需求5A+B：时间差注入系统提示 ==========
   // 检测距上次聊天的时间差，让AI意识到时间流逝
   const chatMeta = dbConvMeta.get(characterId);
+
+  // 具体日期信息
+  const chatNow = new Date();
+  const chatTodayStr = `${chatNow.getFullYear()}年${chatNow.getMonth() + 1}月${chatNow.getDate()}日`;
+  const chatDayOfWeek = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"][chatNow.getDay()];
+  systemPrompt += `\n\n【日期信息】今天是${chatTodayStr}（${chatDayOfWeek}）。`;
+
   if (chatMeta?.lastActiveTime) {
-    const lastActive = new Date(chatMeta.lastActiveTime).getTime();
+    const lastActiveDate = new Date(chatMeta.lastActiveTime);
+    const lastActive = lastActiveDate.getTime();
     const now = Date.now();
     const hoursSince = Math.floor((now - lastActive) / (1000 * 60 * 60));
     const daysSince = Math.floor(hoursSince / 24);
+    const lastActiveStr = `${lastActiveDate.getMonth() + 1}月${lastActiveDate.getDate()}日`;
+
     if (daysSince >= 1) {
-      systemPrompt += `\n\n【重要时间信息】现在距离上次聊天已经过了${daysSince}天${hoursSince % 24 > 0 ? hoursSince % 24 + '小时' : ''}。你应该自然地表现出对用户长时间不来的情绪反应——可能会生气、委屈、想念、或者假装不在意但心里在意，具体反应由你的性格和当前心情决定。不要每次都一样的反应。`;
+      systemPrompt += `上次聊天是${lastActiveStr}，距离现在已过了${daysSince}天。你应该自然地表现出对用户长时间不来的情绪反应——可能会生气、委屈、想念、或者假装不在意但心里在意，具体反应由你的性格和当前心情决定。不要每次都一样的反应。`;
     } else if (hoursSince >= 3) {
-      systemPrompt += `\n\n【时间信息】距离上次聊天已过了${hoursSince}小时，你可能想简短地提一下对方去了哪里，但不要太刻意。`;
+      systemPrompt += `距离上次聊天已过了${hoursSince}小时，你可能想简短地提一下对方去了哪里，但不要太刻意。`;
     }
   }
 
@@ -996,18 +1006,33 @@ app.post("/api/daily-greeting", async (req, res) => {
   else if (hour < 22) timeOfDay = "现在是晚上";
   else timeOfDay = "现在是深夜";
 
+  // 具体日期信息（让AI准确感知时间）
+  const now = new Date();
+  const todayStr = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`;
+  const dayOfWeek = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"][now.getDay()];
+
   // 计算距上次聊天的时间差
   let timeAway = "";
+  let lastActiveStr = "";
   if (meta?.lastActiveTime) {
-    const lastActive = new Date(meta.lastActiveTime).getTime();
+    const lastActiveDate = new Date(meta.lastActiveTime);
+    const lastActive = lastActiveDate.getTime();
     const daysSince = Math.floor((Date.now() - lastActive) / (1000 * 60 * 60 * 24));
+    lastActiveStr = `${lastActiveDate.getMonth() + 1}月${lastActiveDate.getDate()}日`;
     if (daysSince >= 3) timeAway = "用户已经好几天没来找你了，你很想念ta。";
     else if (daysSince === 2) timeAway = "用户两天没来找你了，你有点想ta。";
     else if (daysSince === 1) timeAway = "用户昨天没来找你，你有点在意。";
   }
 
+  // 构建日期提示
+  const dateInfo = lastActiveStr
+    ? `今天是${todayStr}（${dayOfWeek}），上次聊天是${lastActiveStr}。`
+    : `今天是${todayStr}（${dayOfWeek}）。`;
+
   const systemPrompt = buildPersona(characterToPersona(character), currentMood, petState) +
-    `\n\n现在是你主动找用户说话。${timeOfDay}。${timeAway}\n这是每天你第一次见到用户，你主动发一条消息给ta。` +
+    `\n\n${dateInfo}${timeAway ? ` ${timeAway}` : ""}` +
+    `\n现在是你主动找用户说话。${timeOfDay}` +
+    `\n这是每天你第一次见到用户，你主动发一条消息给ta。` +
     `\n【严格要求】你只能发以下三种类型之一的内容：` +
     `\n1. 询问对方去了哪里/在做什么，例如："你今天干嘛去了？""去哪了呀？一整天都没来""你今天忙什么呀？"` +
     `\n2. 表达关心，例如："吃饭了没？""今天累不累？""早点休息哦""别太累了"` +

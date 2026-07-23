@@ -49,7 +49,7 @@ export default function SettingsData({ character, onMemoryCleared }: Props) {
         setTotalMessages(d.totalMessages);
         setTotalDays(d.totalDays);
       })
-      .catch(() => message.error("加载统计失败"))
+      .catch(() => message.error("获取数据遇到了问题"))
       .finally(() => setLoading(false));
   };
 
@@ -62,16 +62,16 @@ export default function SettingsData({ character, onMemoryCleared }: Props) {
 
   const handleClear = async () => {
     if (currentMsgCount === 0) {
-      message.info("没有需要清空的聊天记录");
+      message.info("这里还是空的呢");
       return;
     }
     try {
       await clearConversation(character.id);
       onMemoryCleared();
       load();
-      message.success("记忆已清空");
+      message.success("已经帮她忘记啦");
     } catch {
-      message.error("清空失败");
+      message.error("清空时出了点问题");
     }
   };
 
@@ -87,9 +87,9 @@ export default function SettingsData({ character, onMemoryCleared }: Props) {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      message.success("已导出对话记录");
+      message.success("对话记录已保存");
     } catch {
-      message.error("导出失败");
+      message.error("保存时出了点问题");
     } finally {
       setExporting(false);
     }

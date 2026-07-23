@@ -23,45 +23,64 @@ html, body, #root {
 /* ========== Ambient Background ========== */
 body {
   background: linear-gradient(135deg,
-    var(--color-brand-50) 0%,
-    oklch(0.96 0.03 300) 25%,
-    oklch(0.97 0.02 260) 50%,
-    oklch(0.96 0.03 220) 75%,
-    var(--color-brand-50) 100%
+    oklch(0.97 var(--mood-saturation) var(--time-hue)) 0%,
+    oklch(0.96 var(--mood-saturation) calc(var(--time-hue) + 20)) 25%,
+    oklch(0.97 var(--mood-saturation) calc(var(--time-hue) - 40)) 50%,
+    oklch(0.96 var(--mood-saturation) calc(var(--time-hue) - 20)) 75%,
+    oklch(0.97 var(--mood-saturation) var(--time-hue)) 100%
   );
   background-size: 400% 400%;
   animation: gradientFlow 18s ease infinite;
+  position: relative;
 }
 
-@keyframes gradientFlow {
-  0% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
-  100% { background-position: 0% 50%; }
-}
-
-/* Ambient light blobs */
+/* 浅色模式动态星星背景（悬浮在渐变之上） */
 body::before {
+  content: "";
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  background-image:
+    /* 亮星 2px */
+    radial-gradient(2px 2px at 15% 18%, oklch(0.50 0.10 var(--time-hue) / 0.60), transparent 50%),
+    radial-gradient(2px 2px at 82% 25%, oklch(0.55 0.08 calc(var(--time-hue) + 40) / 0.55), transparent 50%),
+    radial-gradient(2px 2px at 45% 12%, oklch(0.50 0.10 var(--time-hue) / 0.50), transparent 50%),
+    /* 中星 1.5px */
+    radial-gradient(1.5px 1.5px at 28% 42%, oklch(0.45 0.08 var(--time-hue) / 0.45), transparent 50%),
+    radial-gradient(1.5px 1.5px at 72% 68%, oklch(0.48 0.06 calc(var(--time-hue) + 20) / 0.40), transparent 50%),
+    radial-gradient(1.5px 1.5px at 88% 55%, oklch(0.45 0.08 var(--time-hue) / 0.45), transparent 50%),
+    /* 小星 1px（密集） */
+    radial-gradient(1px 1px at 8% 35%, oklch(0.40 0.06 var(--time-hue) / 0.35), transparent 50%),
+    radial-gradient(1px 1px at 22% 78%, oklch(0.38 0.06 var(--time-hue) / 0.30), transparent 50%),
+    radial-gradient(1px 1px at 38% 55%, oklch(0.35 0.04 var(--time-hue) / 0.28), transparent 50%),
+    radial-gradient(1px 1px at 52% 22%, oklch(0.40 0.06 var(--time-hue) / 0.32), transparent 50%),
+    radial-gradient(1px 1px at 65% 85%, oklch(0.38 0.06 var(--time-hue) / 0.30), transparent 50%),
+    radial-gradient(1px 1px at 78% 42%, oklch(0.35 0.04 var(--time-hue) / 0.28), transparent 50%),
+    radial-gradient(1px 1px at 92% 72%, oklch(0.40 0.06 var(--time-hue) / 0.35), transparent 50%);
+  background-repeat: no-repeat;
+  pointer-events: none;
+  z-index: 0;
+  animation: starTwinkle 8s ease-in-out infinite;
+  opacity: 0.8;
+}
+
+/* 星星闪烁动画 */
+@keyframes starTwinkle {
+  0%, 100% { opacity: 0.8; }
+  50% { opacity: 0.5; }
+}
+
+/* Ambient light blob - 左上角暖光 */
+body::after {
   content: "";
   position: fixed;
   top: -10%; left: -5%;
   width: 450px; height: 450px;
-  background: radial-gradient(circle, oklch(0.60 0.12 10 / 0.25), transparent 70%);
+  background: radial-gradient(circle, oklch(0.60 0.10 var(--time-hue) / 0.22), transparent 70%);
   border-radius: 50%;
   pointer-events: none;
   z-index: 0;
   animation: floatBlob1 12s ease-in-out infinite;
-}
-
-body::after {
-  content: "";
-  position: fixed;
-  bottom: -10%; right: -5%;
-  width: 550px; height: 550px;
-  background: radial-gradient(circle, oklch(0.50 0.08 290 / 0.20), transparent 70%);
-  border-radius: 50%;
-  pointer-events: none;
-  z-index: 0;
-  animation: floatBlob2 15s ease-in-out infinite;
 }
 
 @keyframes floatBlob1 {
@@ -184,6 +203,7 @@ body::after {
   min-width: 300px;
   position: relative;
   z-index: var(--z-base);
+  transition: box-shadow var(--duration-slow) ease;
 }
 
 /* Chat Header */
@@ -484,12 +504,15 @@ body::after {
 }
 
 .message.assistant {
-  background: var(--chat-bubble-ai, var(--color-surface-glass-hover));
+  background: var(--chat-bubble-ai, oklch(0.98 var(--mood-saturation) var(--aurora-hue) / 0.80));
   backdrop-filter: blur(10px);
   color: var(--color-ink);
   border-bottom-left-radius: 6px;
   box-shadow: 0 2px 8px oklch(0 0 0 / 0.04);
   border: 1px solid oklch(1 0 0 / 0.45);
+  /* 心情联动边框色调 */
+  border-color: oklch(0.85 var(--mood-saturation) var(--aurora-hue) / 0.40);
+  transition: background 0.6s ease, border-color 0.6s ease;
 }
 
 .message.typing {
@@ -662,14 +685,18 @@ body::after {
   outline: none;
   background: oklch(1 0 0 / 0.65);
   backdrop-filter: blur(8px);
-  transition: all var(--duration-fast);
+  transition: border-color var(--duration-fast) ease,
+              box-shadow var(--duration-fast) ease,
+              background var(--duration-fast) ease,
+              transform var(--duration-fast) var(--ease-out-expo);
   color: var(--color-ink);
 }
 
 .chat-input input:focus {
   border-color: var(--color-brand-500);
-  box-shadow: 0 0 0 3px oklch(0.52 0.22 10 / 0.10);
+  box-shadow: 0 0 0 3px oklch(0.52 0.22 10 / 0.15);
   background: oklch(1 0 0 / 0.85);
+  transform: scale(1.005);
 }
 
 .chat-input input::placeholder {
@@ -684,18 +711,29 @@ body::after {
   color: var(--color-ink-on-brand);
   font-size: var(--text-base);
   cursor: pointer;
-  transition: all var(--duration-fast);
+  transition: transform var(--duration-fast) var(--ease-out-expo),
+              box-shadow var(--duration-fast) var(--ease-out-expo),
+              background var(--duration-fast);
   box-shadow: var(--shadow-brand);
   font-weight: 600;
+  will-change: transform;
 }
 
 .chat-input button:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 16px oklch(0.52 0.22 10 / 0.35);
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 6px 24px oklch(0.52 0.22 10 / 0.40);
+  background: linear-gradient(135deg, var(--color-brand-500), var(--color-brand-600));
 }
 
 .chat-input button:disabled { opacity: 0.5; cursor: not-allowed; }
-.chat-input button:active:not(:disabled) { transform: scale(0.97); }
+.chat-input button:active:not(:disabled) {
+  transform: translateY(0) scale(0.98);
+  box-shadow: 0 2px 8px oklch(0.52 0.22 10 / 0.25);
+}
+.chat-input button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px oklch(0.52 0.22 10 / 0.30), 0 2px 12px oklch(0.52 0.22 10 / 0.20);
+}
 .chat-input textarea { font-size: 15px; }
 
 /* ========== Scrollbar ========== */

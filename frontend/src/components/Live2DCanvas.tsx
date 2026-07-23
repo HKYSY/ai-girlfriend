@@ -719,7 +719,7 @@ export default function Live2DCanvas({
         ref={containerRef}
         style={{ width: "100%", height: "100%", position: "relative" }}
       >
-        {loading && <div className="stage-loading">立绘加载中…</div>}
+        {loading && <div className="stage-loading">她正在准备…</div>}
       </div>
 
       {/* 心情光晕（模型背后，颜色随心情变化） */}

@@ -1,0 +1,80 @@
+/* ========== Mood Indicator ========== */
+.mood-indicator {
+  position: fixed;
+  bottom: 24px;
+  left: 24px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: var(--color-surface-glass);
+  backdrop-filter: var(--glass-blur);
+  border-radius: var(--radius-full);
+  border: 1px solid oklch(1 0 0 / 0.30);
+  box-shadow: var(--shadow-md);
+  z-index: var(--z-sticky);
+  transition: transform 0.3s var(--ease-out-expo), opacity 0.3s var(--ease-out-expo);
+}
+
+.mood-indicator-visible {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+.mood-indicator-hidden {
+  transform: translateY(10px);
+  opacity: 0;
+}
+
+/* 心情上升动画：弹跳+上浮+绿色光晕 */
+.mood-indicator-up {
+  animation: moodUp 0.4s var(--ease-out-back);
+  box-shadow: 0 0 16px oklch(0.55 0.14 145 / 0.50) !important;
+}
+
+@keyframes moodUp {
+  0% { transform: translateY(0) scale(1); }
+  30% { transform: translateY(-12px) scale(1.15); }
+  60% { transform: translateY(-4px) scale(1.05); }
+  100% { transform: translateY(0) scale(1); }
+}
+
+/* 心情下降动画：下沉+黯淡 */
+.mood-indicator-down {
+  animation: moodDown 0.3s ease;
+}
+
+@keyframes moodDown {
+  0% { transform: translateY(0); opacity: 1; }
+  50% { transform: translateY(4px); opacity: 0.6; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+
+.mood-indicator-emoji {
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.mood-indicator-value {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-ink-muted);
+  line-height: 1;
+}
+
+/* 深色模式 */
+[data-theme="dark"] .mood-indicator {
+  background: oklch(0.18 0.02 280 / 0.85);
+  border-color: oklch(1 0 0 / 0.08);
+}
+
+[data-theme="dark"] .mood-indicator-value {
+  color: var(--color-brand-300);
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .mood-indicator {
+    transition: none;
+  }
+}

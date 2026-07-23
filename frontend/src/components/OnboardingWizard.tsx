@@ -47,7 +47,6 @@ export default function OnboardingWizard({ character, onComplete }: Props) {
   const [showKey, setShowKey] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; latency?: number; error?: string } | null>(null);
-  const [apiSaved, setApiSaved] = useState(false);
 
   // Step 1: 角色设置
   const [name, setName] = useState(character.name || "玉子");
@@ -68,18 +67,17 @@ export default function OnboardingWizard({ character, onComplete }: Props) {
   // ===== Step 0: 保存 API 配置 =====
   const saveApiConfig = async (): Promise<boolean> => {
     try {
-      const updated = await updateCharacter(character.id, {
+      await updateCharacter(character.id, {
         apiProvider: provider,
         apiKey: apiKey.trim(),
         apiModel: apiModel.trim() || preset.defaultModel,
         apiUrl: "",
       } as any);
-      setApiSaved(true);
-      message.success("AI 配置已保存");
+      message.success("连接好了");
       // 不立即调用 onComplete，等全部步骤完成
       return true;
     } catch {
-      message.error("保存失败");
+      message.error("保存时遇到了问题");
       return false;
     }
   };
@@ -106,7 +104,7 @@ export default function OnboardingWizard({ character, onComplete }: Props) {
   const saveRole = async (): Promise<boolean> => {
     const trimmed = name.trim();
     if (!trimmed) {
-      message.warning("请给她起个名字");
+      message.warning("给她起个名字吧");
       return false;
     }
     try {
@@ -114,10 +112,10 @@ export default function OnboardingWizard({ character, onComplete }: Props) {
         name: trimmed,
         personalityTemplate: template,
       } as any);
-      message.success("角色信息已保存");
+      message.success("好的，记住了");
       return true;
     } catch {
-      message.error("保存失败");
+      message.error("保存时遇到了问题");
       return false;
     }
   };
@@ -377,11 +375,10 @@ export default function OnboardingWizard({ character, onComplete }: Props) {
           <Button
             type="primary"
             onClick={handleNext}
-            icon={isLastStep ? <Heart size={14} /> : <ArrowRight size={14} />}
-            iconPosition="end"
             size="large"
           >
             {isLastStep ? "开始聊天" : "下一步"}
+            {isLastStep ? <Heart size={14} style={{ marginLeft: 6 }} /> : <ArrowRight size={14} style={{ marginLeft: 6 }} />}
           </Button>
         </div>
       </div>
