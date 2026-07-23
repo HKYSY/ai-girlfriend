@@ -70,7 +70,7 @@ export default function AchievementsPanel({ characterId, refreshKey }: Achieveme
       ) : achievements.length === 0 ? (
         <Empty description="暂无成就数据" />
       ) : (
-        <Space direction="vertical" style={{ width: "100%" }} size={8}>
+        <Space orientation="vertical" style={{ width: "100%" }} size={8}>
           {achievements.map((ach) => {
             const nextTierIndex = ach.tiers.findIndex((t) => !t.unlocked);
             const currentTierIndex = nextTierIndex === -1 ? ach.tiers.length - 1 : nextTierIndex;

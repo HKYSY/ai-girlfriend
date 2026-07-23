@@ -14,14 +14,9 @@ import type { PersonaSettings, PetState } from "./persona.js";
 import {
   loadCharacters,
   getCharacter,
-  addCharacter,
   updateCharacter,
-  deleteCharacter,
   loadConversation,
   saveConversation,
-  clearConversation,
-  generateId,
-  DEFAULT_POSITION,
   backupConversation,
 } from "./storage.js";
 import type { Character, ConversationData } from "./storage.js";
@@ -29,6 +24,12 @@ import { mergeDiaryEntries, parseMarkers } from "./utils.js";
 import type { DiaryEntry } from "./utils.js";
 import { migrateFromJSON, dbPetState, dbMoodHistory, dbDiary, dbMessages, dbFacts, dbConvMeta, dbStickers, dbMessageStickers, localDateStr, initStickers, db } from "./database.js";
 import type { DBMessage, DBCharacter } from "./database.js";
+import { errorHandler } from "./middleware/errorHandler.js";
+import characterRoutes from "./routes/character.js";
+import uploadRoutes from "./routes/upload.js";
+import stickerRoutes from "./routes/sticker.js";
+import diaryRoutes from "./routes/diary.js";
+import moodRoutes from "./routes/mood.js";
 
 dotenv.config();
 
@@ -242,14 +243,15 @@ function updatePetStatsAndCheckAchievements(petState: PetState): string[] {
   return checkAchievements(petState);
 }
 
+// 注册路由
+app.use('/api', characterRoutes);
+app.use('/api', uploadRoutes);
+app.use('/api', stickerRoutes);
+app.use('/api', diaryRoutes);
+app.use('/api', moodRoutes);
+
 // 静态服务上传的模型文件
 app.use("/api/models", express.static(UPLOADS_DIR));
-
-// multer 配置
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 100 * 1024 * 1024 },
-});
 
 const MAX_HISTORY_ROUNDS = 40; // 文件最多保留80条（40轮）
 const CHAT_CONTEXT_LIMIT = 40;  // 发给AI的最大历史条数（最近40条）
@@ -1128,15 +1130,6 @@ app.post("/api/mood-decay", (req, res) => {
   res.json({ ok: true, mood: newMood, level: level.label, emoji: level.emoji });
 });
 
-// 心情历史查询（支持 days 参数，默认 7 天）
-app.get("/api/mood-history", (req, res) => {
-  const characterId = req.query.characterId as string | undefined;
-  const days = parseInt(req.query.days as string, 10) || 7;
-  if (!characterId) return res.status(400).json({ error: "characterId 必填" });
-  const history = loadMoodHistory(characterId, Math.min(30, Math.max(1, days)));
-  res.json({ ok: true, history, days: Math.min(30, Math.max(1, days)) });
-});
-
 // 成就查询
 app.get("/api/achievements", (req, res) => {
   const characterId = req.query.characterId as string | undefined;
@@ -1392,14 +1385,6 @@ async function backfillDiaries(characterId: string, days: number = 7): Promise<{
   return { generated, checked: days };
 }
 
-// 获取日记列表
-app.get("/api/diary", (req, res) => {
-  const characterId = req.query.characterId as string | undefined;
-  if (!characterId) return res.status(400).json({ error: "characterId 必填" });
-  const entries = loadDiary(characterId);
-  res.json({ ok: true, entries, hasToday: hasTodayDiary(characterId) });
-});
-
 // 生成日记（默认生成昨天，可用 date 参数指定日期）
 app.post("/api/diary/generate", async (req, res) => {
   const { characterId, date } = req.body as { characterId?: string; date?: string };
@@ -1420,307 +1405,17 @@ app.post("/api/diary/backfill", async (req, res) => {
   res.json({ ok: true, generated: result.generated, checked: result.checked });
 });
 
-// ========== 角色管理 API ==========
-app.get("/api/characters", (_req, res) => {
-  res.json(loadCharacters());
-});
-
-app.get("/api/characters/:id", (req, res) => {
-  const char = getCharacter(req.params.id);
-  if (!char) return res.status(404).json({ error: "角色不存在" });
-  const conv = loadConversation(req.params.id);
-
-  // ========== 需求1C：渐变惩罚心情 ==========
-  // 检测上次活跃时间与当前时间的天数差，按规则调整心情
-  const meta = dbConvMeta.get(req.params.id);
-  if (meta?.lastActiveTime) {
-    const lastActive = new Date(meta.lastActiveTime).getTime();
-    const now = Date.now();
-    const daysSince = Math.floor((now - lastActive) / (1000 * 60 * 60 * 24));
-
-    if (daysSince >= 1 && char.mood > 0) {
-      let newMood: number;
-      if (daysSince === 1) {
-        newMood = Math.max(0, char.mood - 30);
-      } else if (daysSince === 2) {
-        newMood = Math.max(0, char.mood - 50);
-      } else {
-        newMood = 0;
-      }
-      if (newMood < char.mood) {
-        console.log(`[mood-penalty] ${char.name}: ${daysSince}天未活跃, 心情 ${char.mood}→${newMood}`);
-        char.mood = newMood;
-        updateCharacter(req.params.id, { mood: newMood });
-      }
-    }
-  }
-
-  // 过滤掉互动消息（hidden=1 或以"（互动）"开头的 user 消息）
-  const filteredConv = {
-    ...conv,
-    messages: conv.messages.filter(
-      (m) => !(m.role === "user" && m.content.startsWith("（互动）"))
-    ),
-  };
-  res.json({ character: char, conversation: filteredConv });
-});
-
-app.post("/api/characters", (req, res) => {
-  const { name, personalityTemplate, customPersonality, modelUrl } = req.body as Partial<Character>;
-  if (!name) return res.status(400).json({ error: "name 必填" });
-
-  const character: Character = {
-    id: generateId(),
-    name,
-    personalityTemplate: personalityTemplate || "yuko",
-    customPersonality: customPersonality || "",
-    modelUrl: modelUrl || "/live2d/icegirl/IceGirl.model3.json",
-    mood: 60,
-    live2dPosition: { ...DEFAULT_POSITION },
-    createdAt: new Date().toISOString(),
-    apiProvider: "deepseek",
-    apiKey: "",
-    apiModel: "",
-    apiUrl: "",
-    avatarUrl: "",
-  };
-  addCharacter(character);
-  console.log(`[characters] 创建角色: ${character.id} (${name})`);
-  res.json(character);
-});
-
-app.put("/api/characters/:id", (req, res) => {
-  const updates = req.body as Partial<Character>;
-  const updated = updateCharacter(req.params.id, updates);
-  if (!updated) return res.status(404).json({ error: "角色不存在" });
-  console.log(`[characters] 更新角色: ${req.params.id}`);
-  res.json(updated);
-});
-
-app.delete("/api/characters/:id", (req, res) => {
-  const ok = deleteCharacter(req.params.id);
-  if (!ok) return res.status(404).json({ error: "角色不存在" });
-  console.log(`[characters] 删除角色: ${req.params.id}`);
-  res.json({ ok: true });
-});
-
-// 清空对话记忆
-app.delete("/api/characters/:id/conversation", (req, res) => {
-  clearConversation(req.params.id);
-  // 重置心情为 60
-  updateCharacter(req.params.id, { mood: 60 });
-  res.json({ ok: true, message: "记忆已清空" });
-});
-
-// 导出某角色的全部对话记录（JSON 下载）
-app.get("/api/characters/:id/export", (req, res) => {
-  const char = getCharacter(req.params.id);
-  if (!char) return res.status(404).json({ error: "角色不存在" });
-  const messages = dbMessages.getAll(req.params.id, true).map((m) => ({
-    role: m.role,
-    content: m.content,
-    createdAt: m.createdAt,
-  }));
-  res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(char.name)}-conversation.json"`);
-  res.json({
-    character: { id: char.id, name: char.name, createdAt: char.createdAt, mood: char.mood },
-    messages,
-    total: messages.length,
-    exportedAt: new Date().toISOString(),
-  });
-});
-
 // ========== 性格模板 ==========
 app.get("/api/personality-templates", (_req, res) => {
   res.json(PERSONALITY_TEMPLATES);
 });
 
-// ========== Live2D 模型管理 ==========
-app.get("/api/models", (_req, res) => {
-  try {
-    const models: { id: string; name: string; modelUrl: string }[] = [];
-    const entries = fs.readdirSync(UPLOADS_DIR, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const modelDir = path.join(UPLOADS_DIR, entry.name);
-      const files = fs.readdirSync(modelDir);
-      const model3File = files.find((f) => f.endsWith(".model3.json"));
-      if (model3File) {
-        // 读取自定义名字
-        let displayName = entry.name;
-        const nameFile = path.join(modelDir, ".model-name");
-        if (fs.existsSync(nameFile)) {
-          displayName = fs.readFileSync(nameFile, "utf-8").trim() || entry.name;
-        }
-        models.push({
-          id: entry.name,
-          name: displayName,
-          modelUrl: `/api/models/${entry.name}/${model3File}`,
-        });
-      }
-    }
-    res.json(models);
-  } catch {
-    res.json([]);
-  }
-});
-
-// 删除已上传的模型
-app.delete("/api/models/:id", (req, res) => {
-  try {
-    const modelId = req.params.id;
-    // 安全检查：只允许删除 uploads 目录下的模型，防止路径遍历攻击
-    if (modelId.includes("..") || modelId.includes("/") || modelId.includes("\\")) {
-      return res.status(400).json({ error: "非法的模型ID" });
-    }
-    const modelDir = path.join(UPLOADS_DIR, modelId);
-    if (!fs.existsSync(modelDir)) {
-      return res.status(404).json({ error: "模型不存在" });
-    }
-    // 递归删除模型目录（Windows 上 fs.rmSync 可能静默失败，用 child_process 确保删除）
-    try {
-      fs.rmSync(modelDir, { recursive: true, force: true });
-    } catch (e) {
-      console.error("[delete-model] fs.rmSync 失败:", e);
-    }
-    // 二次检查：如果目录仍存在，用 rmdir 命令强制删除
-    if (fs.existsSync(modelDir)) {
-      execSync(`rmdir /s /q "${modelDir}"`, { stdio: "ignore" });
-    }
-    res.json({ ok: true, deleted: !fs.existsSync(modelDir) });
-  } catch (err) {
-    console.error("[delete-model] 删除失败:", err);
-    res.status(500).json({ error: "删除模型失败" });
-  }
-});
-
-// 预置模型列表（前端 public 目录中的模型）
-app.get("/api/preset-models", (_req, res) => {
-  const presets = [
-    { id: "icegirl", name: "IceGirl", modelUrl: "/live2d/icegirl/IceGirl.model3.json", format: "cubism4" },
-    { id: "haru", name: "Haru", modelUrl: "/live2d/haru/Haru.model3.json", format: "cubism4" },
-  ];
-  res.json(presets);
-});
-
-app.post("/api/upload-model", upload.single("model"), async (req, res) => {
-  const tmpArchive = path.join(UPLOADS_DIR, `model-${Date.now()}.tmp`);
-  try {
-    if (!req.file) return res.status(400).json({ error: "请上传压缩文件" });
-
-    const modelId = `model-${Date.now()}`;
-    const extractDir = path.join(UPLOADS_DIR, modelId);
-    fs.mkdirSync(extractDir, { recursive: true });
-
-    // node-7z 需要文件路径，先把 buffer 写入临时文件
-    fs.writeFileSync(tmpArchive, req.file.buffer);
-
-    // 用 7-Zip 解压（支持 ZIP/RAR/7Z/TAR/GZ/BZ2/XZ 等格式）
-    await new Promise<void>((resolve, reject) => {
-      const stream = Seven.extractFull(tmpArchive, extractDir, {
-        $bin: path7za,
-        $progress: false,
-      });
-      stream.on("end", () => resolve());
-      stream.on("error", (err: Error) => reject(err));
-    });
-
-    // 删除临时压缩文件
-    fs.rmSync(tmpArchive, { force: true });
-
-    // 查找模型文件（优先 .model3.json，其次 .model.json）
-    type Found = { file: string; format: "cubism4" | "cubism2" };
-    const findAll = (dir: string): Found[] => {
-      const results: Found[] = [];
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        const fullPath = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          results.push(...findAll(fullPath));
-        } else if (entry.name.endsWith(".model3.json")) {
-          results.push({
-            file: path.relative(extractDir, fullPath).replace(/\\/g, "/"),
-            format: "cubism4",
-          });
-        } else if (entry.name.endsWith(".model.json")) {
-          results.push({
-            file: path.relative(extractDir, fullPath).replace(/\\/g, "/"),
-            format: "cubism2",
-          });
-        }
-      }
-      return results;
-    };
-
-    const allModels = findAll(extractDir);
-    const found = allModels.find((m) => m.format === "cubism4") || allModels[0];
-    if (!found) {
-      fs.rmSync(extractDir, { recursive: true });
-      return res.status(400).json({
-        error: "压缩包中未找到 .model3.json 或 .model.json 文件",
-      });
-    }
-
-    let modelFile = found.file;
-
-    // 子目录提顶层
-    const modelDir = path.dirname(path.join(extractDir, modelFile));
-    if (modelDir !== extractDir) {
-      const tempDir = path.join(UPLOADS_DIR, `${modelId}-tmp`);
-      fs.renameSync(modelDir, tempDir);
-      fs.rmSync(extractDir, { recursive: true });
-      fs.renameSync(tempDir, extractDir);
-      modelFile = path.basename(modelFile);
-    }
-
-    const modelUrl = `/api/models/${modelId}/${modelFile}`;
-    // 持久化自定义名字
-    const customName = (req.body?.name as string | undefined)?.trim();
-    if (customName) {
-      fs.writeFileSync(path.join(extractDir, ".model-name"), customName, "utf-8");
-    }
-    res.json({
-      ok: true,
-      modelId,
-      modelUrl,
-      name: (customName && customName.trim()) || req.file.originalname,
-      format: found.format,
-    });
-  } catch (err) {
-    console.error("模型上传失败:", err);
-    fs.rmSync(tmpArchive, { force: true });
-    res.status(500).json({ error: "模型上传处理失败，请检查压缩文件格式" });
-  }
-});
-
-// ========== 头像上传 ==========
+// ========== 头像静态文件服务（保留在 index.ts，因为涉及全局路径） ==========
 const AVATARS_DIR = path.join(UPLOADS_BASE, "avatars");
 if (!fs.existsSync(AVATARS_DIR)) {
   fs.mkdirSync(AVATARS_DIR, { recursive: true });
 }
 app.use("/api/avatars", express.static(AVATARS_DIR));
-
-const avatarUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 2 * 1024 * 1024 },
-});
-
-app.post("/api/upload-avatar", avatarUpload.single("avatar"), (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ error: "请上传图片" });
-    const allowedTypes = ["image/jpeg", "image/png", "image/gif", "image/webp"];
-    if (!allowedTypes.includes(req.file.mimetype)) {
-      return res.status(400).json({ error: "仅支持 JPG/PNG/GIF/WEBP 格式" });
-    }
-    const ext = req.file.originalname.split(".").pop() || "png";
-    const filename = `avatar-${Date.now()}.${ext}`;
-    fs.writeFileSync(path.join(AVATARS_DIR, filename), req.file.buffer);
-    res.json({ ok: true, url: `/api/avatars/${filename}` });
-  } catch (err) {
-    console.error("[avatar] 上传失败:", err);
-    res.status(500).json({ error: "头像上传失败" });
-  }
-});
 
 // ========== 桌宠系统 API ==========
 
@@ -2426,44 +2121,6 @@ app.get("/api/stats", (_req, res) => {
   res.json({ ok: true, stats, totalMessages, totalCharacters: stats.length, totalDays });
 });
 
-// ========== 连接测试：验证 API 配置是否可用 ==========
-app.post("/api/test-connection", async (req, res) => {
-  const { provider, apiKey, apiModel, apiUrl } = req.body as {
-    provider?: string; apiKey?: string; apiModel?: string; apiUrl?: string;
-  };
-  const p = provider || "deepseek";
-  let url = apiUrl?.trim() || "";
-  if (p === "deepseek" && !url) url = DEFAULT_URL;
-  if (p === "openai" && !url) url = "https://api.openai.com/v1/chat/completions";
-  if (!url) return res.json({ ok: false, error: "未配置 API 地址" });
-
-  const key = apiKey?.trim() || DEEPSEEK_API_KEY || "";
-  const model = apiModel?.trim() || DEFAULT_MODEL;
-  if (!key) return res.json({ ok: false, error: "未配置 API Key（角色和 .env 均为空）" });
-
-  try {
-    const start = Date.now();
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000);
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-      body: JSON.stringify({ model, messages: [{ role: "user", content: "hi" }], max_tokens: 5, stream: false }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-    const latency = Date.now() - start;
-    if (!response.ok) {
-      const errText = await response.text().catch(() => "");
-      return res.json({ ok: false, error: `HTTP ${response.status}${errText ? ": " + errText.slice(0, 120) : ""}`, latency });
-    }
-    res.json({ ok: true, latency, model });
-  } catch (e) {
-    const msg = e instanceof Error ? (e.name === "AbortError" ? "请求超时（15秒）" : e.message) : "连接失败";
-    res.json({ ok: false, error: msg });
-  }
-});
-
 // 桌面模式：托管前端构建产物（frontend/dist），让 Electron 窗口通过后端单端口访问
 const FRONTEND_DIST = path.join(__dirname, "../../frontend/dist");
 if (fs.existsSync(FRONTEND_DIST)) {
@@ -2494,216 +2151,6 @@ if (fs.existsSync(FRONTEND_DIST)) {
     next();
   }, express.static(path.join(DATA_DIR, "stickers")));
 }
-
-// ========== 表情包管理 ==========
-// 获取表情包列表（支持分页 + 分类过滤，按使用次数倒序）
-app.get("/api/stickers", (req, res) => {
-  try {
-    const category = (req.query.category as string) || "all";
-    // 用最简单的 SELECT 避免复杂查询卡住，内存过滤+排序
-    let stickers = db.prepare("SELECT * FROM stickers").all() as any[];
-    if (category !== "all") {
-      stickers = stickers.filter((s) => s.category === category);
-    }
-    stickers.sort((a, b) => b.usageCount - a.usageCount);
-    const total = stickers.length;
-    res.json({ ok: true, stickers, total, hasMore: false });
-  } catch (e: any) {
-    res.json({ ok: false, error: e.message });
-  }
-});
-
-// 最近使用的表情包（QQ 风格面板的"最近"区域用），返回使用过且次数高的前 N 个
-app.get("/api/stickers/recent", (req, res) => {
-  try {
-    const limit = Math.min(30, Math.max(1, parseInt(req.query.limit as string, 10) || 20));
-    // 简单查询 + 内存过滤，避免复杂查询卡住
-    const all = db.prepare("SELECT * FROM stickers").all() as any[];
-    const stickers = all.filter((s) => s.usageCount > 0).sort((a, b) => b.usageCount - a.usageCount).slice(0, limit);
-    res.json({ ok: true, stickers });
-  } catch (e: any) {
-    res.json({ ok: false, error: e.message });
-  }
-});
-
-// 按分类获取表情包
-app.get("/api/stickers/category/:category", (req, res) => {
-  try {
-    const { category } = req.params;
-    const stickers = dbStickers.getByCategory(category);
-    res.json({ ok: true, stickers });
-  } catch (e: any) {
-    res.json({ ok: false, error: e.message });
-  }
-});
-
-// 搜索表情包
-app.get("/api/stickers/search/:keyword", (req, res) => {
-  try {
-    const { keyword } = req.params;
-    const stickers = dbStickers.search(keyword);
-    res.json({ ok: true, stickers });
-  } catch (e: any) {
-    res.json({ ok: false, error: e.message });
-  }
-});
-
-// 配置表情包上传中间件
-// 上传临时目录放在 stickers 主目录之外，避免被 /stickers 静态服务暴露临时文件
-const STICKER_TMP_DIR = path.join(DATA_DIR, ".sticker-tmp");
-if (!fs.existsSync(STICKER_TMP_DIR)) fs.mkdirSync(STICKER_TMP_DIR, { recursive: true });
-const stickerUpload = multer({ dest: STICKER_TMP_DIR });
-
-// 上传表情包
-app.post("/api/stickers/upload", stickerUpload.single("sticker"), (req, res) => {
-  try {
-    if (!req.file) {
-      return res.json({ ok: false, error: "未上传文件" });
-    }
-
-    const { category, keywords, emotionMatch } = req.body;
-    const ext = path.extname(req.file.originalname) || ".png";
-    const filename = `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
-    const stickerDir = path.join(DATA_DIR, "stickers");
-
-    if (!fs.existsSync(stickerDir)) {
-      fs.mkdirSync(stickerDir, { recursive: true });
-    }
-
-    const finalPath = path.join(stickerDir, filename);
-    fs.renameSync(req.file.path, finalPath);
-
-    const id = dbStickers.add({
-      filename,
-      category: category || "general",
-      keywords: keywords || "[]",
-      emotionMatch: emotionMatch || "",
-    });
-
-    res.json({ ok: true, id, filename, path: `/stickers/${filename}` });
-  } catch (e: any) {
-    res.json({ ok: false, error: e.message });
-  }
-});
-
-// 扫描 stickers/temp 目录，批量导入用户手动放入的图片
-// 把文件从 temp 移到 stickers 主目录，登记入库（默认 general 分类），导入后清空 temp
-app.post("/api/stickers/scan-import", (_req, res) => {
-  try {
-    const stickerDir = path.join(DATA_DIR, "stickers");
-    const tempDir = path.join(stickerDir, "temp");
-    if (!fs.existsSync(tempDir)) {
-      return res.json({ ok: true, imported: 0, skipped: 0, total: dbStickers.count(), message: "temp 目录不存在" });
-    }
-
-    const allowedExts = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"];
-    const files = fs.readdirSync(tempDir).filter((f) => allowedExts.includes(path.extname(f).toLowerCase()));
-
-    if (files.length === 0) {
-      return res.json({ ok: true, imported: 0, skipped: 0, total: dbStickers.count(), message: "temp 目录无图片文件" });
-    }
-
-    let imported = 0;
-    let skipped = 0;
-    const errors: string[] = [];
-
-    for (const file of files) {
-      const srcPath = path.join(tempDir, file);
-
-      // 去重：数据库已有该 filename 则跳过（之前导入过），并清理 temp 残留
-      if (dbStickers.getByFilename(file)) {
-        skipped++;
-        try { fs.unlinkSync(srcPath); } catch { /* 忽略删除失败 */ }
-        continue;
-      }
-
-      // 主目录已有同名文件但数据库无记录（异常残留），重命名避免覆盖
-      let finalName = file;
-      if (fs.existsSync(path.join(stickerDir, file))) {
-        finalName = `${Date.now()}-${Math.random().toString(36).slice(2)}${path.extname(file)}`;
-      }
-
-      try {
-        fs.renameSync(srcPath, path.join(stickerDir, finalName));
-        dbStickers.add({ filename: finalName, category: "general", keywords: "[]", emotionMatch: "" });
-        imported++;
-      } catch (e) {
-        errors.push(`${file}: ${(e as Error).message}`);
-      }
-    }
-
-    // 导入完成后，尝试清空 temp 目录（仅删除空文件夹或残留的非图片文件）
-    try {
-      const remaining = fs.readdirSync(tempDir);
-      for (const f of remaining) {
-        try { fs.unlinkSync(path.join(tempDir, f)); } catch { /* 忽略 */ }
-      }
-    } catch { /* 忽略 */ }
-
-    console.log(`[stickers/scan-import] 导入 ${imported}，跳过 ${skipped}，错误 ${errors.length}`);
-    res.json({ ok: true, imported, skipped, errors, total: dbStickers.count() });
-  } catch (e: any) {
-    console.error("[stickers/scan-import] 失败:", e);
-    res.status(500).json({ ok: false, error: e.message });
-  }
-});
-
-// 标注表情包（手动更新分类/关键词/情绪匹配，供前端标注功能调用）
-app.patch("/api/stickers/:id", (req, res) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    const { category, keywords, emotionMatch } = req.body as {
-      category?: string; keywords?: string | string[]; emotionMatch?: string;
-    };
-
-    const validCategories = ["happy", "angry", "cute", "confused", "sad", "general"];
-    if (category !== undefined && !validCategories.includes(category)) {
-      return res.json({ ok: false, error: "无效的分类" });
-    }
-    // emotionMatch 允许空字符串（清除标注）或 8 种情绪之一
-    const validEmotions = ["", "开心", "生气", "难过", "撒娇", "惊讶", "疑惑", "害羞", "平静"];
-    if (emotionMatch !== undefined && !validEmotions.includes(emotionMatch)) {
-      return res.json({ ok: false, error: "无效的情绪标签" });
-    }
-
-    const keywordsStr = keywords !== undefined
-      ? (Array.isArray(keywords) ? JSON.stringify(keywords) : (keywords as string))
-      : undefined;
-
-    const updated = dbStickers.update(id, {
-      category,
-      keywords: keywordsStr,
-      emotionMatch,
-    });
-
-    res.json({ ok: updated, sticker: dbStickers.getById(id) });
-  } catch (e: any) {
-    res.json({ ok: false, error: e.message });
-  }
-});
-
-// 删除表情包
-app.delete("/api/stickers/:id", (req, res) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    const sticker = dbStickers.getById(id);
-    if (!sticker) {
-      return res.json({ ok: false, error: "表情包不存在" });
-    }
-
-    // 删除文件
-    const filePath = path.join(DATA_DIR, "stickers", sticker.filename);
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
-
-    // 删除数据库记录
-    const deleted = dbStickers.delete(id);
-    res.json({ ok: deleted, message: deleted ? "删除成功" : "删除失败" });
-  } catch (e: any) {
-    res.json({ ok: false, error: e.message });
-  }
-});
 
 // 用户发送表情包（SSE 流式 + 触发 AI 回复）
 // 用户发送表情包时，AI 也能感知到（用描述性文本传入上下文），并流式回复
@@ -2900,6 +2347,9 @@ app.post("/api/send-sticker", async (req, res) => {
 });
 
 
+
+// 错误处理中间件（必须放在所有路由之后）
+app.use(errorHandler);
 
 app.listen(PORT, () => {
   console.log(`✅ 后端服务已启动: http://localhost:${PORT}`);
