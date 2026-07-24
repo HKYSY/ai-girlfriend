@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Avatar, Button } from "antd";
 import { User, ArrowUp } from "lucide-react";
-import { FixedSizeList as List, ListChildComponentProps } from "react-window";
+// @ts-ignore - react-window类型定义不完整
+import { FixedSizeList } from "react-window";
+
+interface MessageRowProps {
+  index: number;
+  style: React.CSSProperties;
+}
 
 export interface Message {
   role: "user" | "assistant";
@@ -44,7 +50,7 @@ export function cleanAssistantText(text: string): string {
 export default function ChatWindow({ messages, loading, characterName, characterAvatarUrl, userAvatarUrl, hasMore, loadingMore, onLoadMore }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const listRef = useRef<List>(null);
+  const listRef = useRef<FixedSizeList>(null);
 
   // 自动滚动到最新消息
   useEffect(() => {
@@ -78,7 +84,7 @@ export default function ChatWindow({ messages, loading, characterName, character
   }, [messages.length]);
 
   // 虚拟列表的行渲染函数
-  const MessageRow = ({ index, style }: ListChildComponentProps) => {
+  const MessageRow = ({ index, style }: MessageRowProps) => {
     const msg = messages[index];
     // 解析 [表情包:category:filename] 格式的旧数据 / DB 加载数据
     const stickerMatch = msg.content?.match(/^\[表情包:([^:]+):([^\]]+)\]$/);
@@ -134,7 +140,7 @@ export default function ChatWindow({ messages, loading, characterName, character
       )}
       {/* 虚拟列表渲染消息 */}
       {messages.length > 0 && (
-        <List
+        <FixedSizeList
           ref={listRef}
           height={500}
           itemCount={messages.length}
@@ -143,7 +149,7 @@ export default function ChatWindow({ messages, loading, characterName, character
           style={{ flex: 1 }}
         >
           {MessageRow}
-        </List>
+        </FixedSizeList>
       )}
       {loading && (
         <div className="message-row assistant">

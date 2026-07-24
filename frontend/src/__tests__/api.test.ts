@@ -16,7 +16,7 @@ describe('API 工具函数', () => {
 
   describe('fetchWithRetry 重试逻辑', () => {
     it('成功请求不重试', async () => {
-      const mockData = [];
+      const mockData: any[] = [];
       const mockResponse = {
         ok: true,
         status: 200,
@@ -33,7 +33,7 @@ describe('API 工具函数', () => {
 
     it('失败后自动重试', async () => {
       const errorResponse = { ok: false, status: 404 };
-      const mockData = [];
+      const mockData: any[] = [];
       const successResponse = {
         ok: true,
         status: 200,
@@ -64,7 +64,7 @@ describe('API 工具函数', () => {
 
     it('网络错误时重试', async () => {
       const networkError = new TypeError('fetch failed');
-      const mockData = [];
+      const mockData: any[] = [];
       const successResponse = {
         ok: true,
         status: 200,
@@ -262,7 +262,7 @@ describe('API 工具函数', () => {
 
   describe('API 函数调用', () => {
     it('getCharacters 调用正确的端点', async () => {
-      const mockData = [];
+      const mockData: any[] = [];
       const mockResponse = {
         ok: true,
         status: 200,
