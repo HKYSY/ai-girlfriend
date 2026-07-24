@@ -1,6 +1,6 @@
 import { useState, KeyboardEvent } from "react";
 import { Input, Button } from "antd";
-import { Send, Smile } from "lucide-react";
+import { Send } from "lucide-react";
 import { StickerPanel } from "./StickerPanel";
 
 const { TextArea } = Input;
@@ -56,18 +56,6 @@ export default function ChatInput({ onSend, onSendSticker, disabled }: Props) {
           onClose={() => setShowStickers(false)}
         />
       )}
-      {/* 表情包按钮暂时禁用，后续升级优化 */}
-      {/* <div className="input-actions">
-        <Button
-          type="text"
-          size="large"
-          icon={<Smile size={18} />}
-          onClick={() => setShowStickers(!showStickers)}
-          disabled={disabled}
-          title="表情包"
-          className="sticker-btn"
-        />
-      </div> */}
       <TextArea
         value={text}
         placeholder="跟她说点什么…"

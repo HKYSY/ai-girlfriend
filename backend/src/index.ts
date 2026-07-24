@@ -30,6 +30,7 @@ import uploadRoutes from "./routes/upload.js";
 import stickerRoutes from "./routes/sticker.js";
 import diaryRoutes from "./routes/diary.js";
 import moodRoutes from "./routes/mood.js";
+import { logger } from "./utils/logger.js";
 
 dotenv.config();
 
@@ -358,7 +359,7 @@ async function analyzeSentiment(message: string, apiKey: string, model: string, 
       moodChange: Math.max(-10, Math.min(10, moodChange)),
     };
   } catch (e) {
-    console.error("[sentiment] AI情感分析失败:", e);
+    logger.error('AI情感分析失败', { error: e instanceof Error ? e.message : String(e) });
     return null;
   }
 }
@@ -437,9 +438,14 @@ ${dialogText}`;
     convData.summaryUpTo = (convData.summaryUpTo || 0) + toSummarize.length;
 
     saveConversation(characterId, convData);
-    console.log(`[summary] 已生成摘要: ${toSummarize.length}条消息压缩为${newSummary.length}字，剩余${convData.messages.length}条`);
+    logger.info('已生成摘要', {
+      characterId,
+      messageCount: toSummarize.length,
+      summaryLength: newSummary.length,
+      remainingMessages: convData.messages.length
+    });
   } catch (e) {
-    console.error("[summary] 摘要生成失败:", e);
+    logger.error('摘要生成失败', { characterId, error: e instanceof Error ? e.message : String(e) });
   }
 }
 
@@ -742,52 +748,6 @@ app.post("/api/chat", async (req, res) => {
     const msgResult = dbMessages.addAssistant(characterId, reply);
     const messageId = msgResult.lastInsertRowid as number;
 
-    // AI自动匹配表情包（暂时禁用，后续升级优化）
-    // if (effectiveEmotion && !clientClosed) {
-    //   const matchedStickers = dbStickers.getByEmotion(effectiveEmotion);
-    //   if (matchedStickers.length > 0) {
-    //     // 概率控制：35% 基础概率 + 连续发会降低
-    //     const lastStickerAt = (convData as any).lastStickerAt ? new Date((convData as any).lastStickerAt).getTime() : 0;
-    //     const lastUserMsgAt = (convData.messages[convData.messages.length - 2] as any)?.createdAt
-    //       ? new Date((convData.messages[convData.messages.length - 2] as any).createdAt).getTime()
-    //       : 0;
-    //     // 距离上次发表情包越近，概率越低
-    //     const minutesSinceLastSticker = lastStickerAt ? (Date.now() - lastStickerAt) / 60000 : 999;
-    //     const minutesSinceLastUser = lastUserMsgAt ? (Date.now() - lastUserMsgAt) / 60000 : 999;
-
-    //     let prob = 0.35;  // 基础 35%
-    //     if (minutesSinceLastSticker < 2) prob = 0.10;  // 2 分钟内发过 → 10%
-    //     else if (minutesSinceLastSticker < 5) prob = 0.20;  // 5 分钟内 → 20%
-    //     if (minutesSinceLastUser < 1) prob *= 0.5;  // 用户刚发完 1 分钟内 → 再砍半
-    //     if (reply.length < 10) prob = 0;  // 短回复不发表情包
-
-    //     const dice = Math.random();
-    //     if (dice < prob) {
-    //       // 随机选择一个表情包（优先使用次数少的）
-    //       const sorted = matchedStickers.sort((a, b) => a.usageCount - b.usageCount);
-    //       const top3 = sorted.slice(0, Math.min(3, sorted.length));
-    //       const selected = top3[Math.floor(Math.random() * top3.length)];
-
-    //       // 增加使用次数
-    //       dbStickers.incrementUsage(selected.id);
-    //       dbMessageStickers.add(messageId, selected.id);
-    //       (convData as any).lastStickerAt = new Date().toISOString();
-
-    //       sseSend(res, {
-    //         type: "sticker",
-    //         sticker: {
-    //           id: selected.id,
-    //           url: `/stickers/${selected.filename}`,
-    //           category: selected.category
-    //         }
-    //       });
-
-    //       console.log(`[chat] AI发送表情包: id=${selected.id}, emotion=${effectiveEmotion}, prob=${prob.toFixed(2)}, dice=${dice.toFixed(2)}`);
-    //     } else {
-    //       console.log(`[chat] AI跳过表情包: emotion=${effectiveEmotion}, prob=${prob.toFixed(2)}, dice=${dice.toFixed(2)} (未达阈值)`);
-    //     }
-    //   }
-    // }
     // 内存中的 convData 用于上下文（限制长度不影响数据库）
     convData.messages.push({ role: "user", content: message });
     convData.messages.push({ role: "assistant", content: reply });
@@ -859,7 +819,10 @@ app.post("/api/chat", async (req, res) => {
     if (err instanceof Error && err.name === "AbortError") {
       sendError("AI 响应超时，请稍后再试");
     } else {
-      console.error("[chat] 异常:", err);
+      logger.error('聊天异常', {
+        characterId,
+        error: err instanceof Error ? err.message : String(err)
+      });
       sendError("服务器内部错误");
     }
   }
@@ -958,7 +921,10 @@ app.post("/api/proactive", async (req, res) => {
     if (err instanceof Error && err.name === "AbortError") {
       sendError("AI 响应超时");
     } else {
-      console.error("[proactive] 异常:", err);
+      logger.error('主动消息异常', {
+        characterId,
+        error: err instanceof Error ? err.message : String(err)
+      });
       sendError("服务器内部错误");
     }
   }
@@ -1108,7 +1074,10 @@ app.post("/api/daily-greeting", async (req, res) => {
       res.end();
     }
   } catch (err) {
-    console.error("[daily-greeting] 异常:", err);
+    logger.error('每日问候失败', {
+      characterId,
+      error: err instanceof Error ? err.message : String(err)
+    });
     sendError("每日问候失败");
   }
 });
@@ -1288,24 +1257,31 @@ ${cleanDialog || "（无对话记录）"}
       if (!response.ok) {
         // 关键：打印响应体才能看到 DeepSeek 返回的具体错误（如 context length / invalid messages）
         const errBody = await response.text().catch(() => "(无法读取响应体)");
-        console.error(`[diary] DeepSeek 调用失败: HTTP ${response.status}`);
-        console.error(`[diary] 响应体: ${errBody.slice(0, 500)}`);
-        console.error(`[diary] model=${api.model}, max_tokens=${maxTokens}, msgCount=${msgCount}, dialogLen=${cleanDialog.length}`);
+        logger.error('DeepSeek调用失败', {
+          status: response.status,
+          responseBody: errBody.slice(0, 500),
+          model: api.model,
+          maxTokens,
+          msgCount,
+          dialogLength: cleanDialog.length
+        });
         return null;
       }
 
       const data = await response.json();
       const content = data.choices?.[0]?.message?.content;
       if (!content || typeof content !== "string") {
-        console.error("[diary] DeepSeek 返回内容为空:", JSON.stringify(data).slice(0, 300));
+        logger.error('DeepSeek返回内容为空', {
+          responseData: JSON.stringify(data).slice(0, 300)
+        });
         return null;
       }
       return content;
     } catch (e: any) {
       if (e.name === "AbortError") {
-        console.error("[diary] DeepSeek 调用超时（120s）");
+        logger.error('DeepSeek调用超时', { timeout: '120s' });
       } else {
-        console.error("[diary] DeepSeek 调用异常:", e.message);
+        logger.error('DeepSeek调用异常', { error: e.message });
       }
       return null;
     } finally {
@@ -1367,7 +1343,11 @@ ${cleanDialog || "（无对话记录）"}
     console.log(`[diary] ${characterId}: 生成 ${dateStr} 日记 (${msgCount}条对话, ${content.length}字)`);
     return entry;
   } catch (e) {
-    console.error("[diary] 生成失败:", e);
+    logger.error('日记生成失败', {
+      characterId,
+      dateStr,
+      error: e instanceof Error ? e.message : String(e)
+    });
     return null;
   }
 }
@@ -1955,7 +1935,11 @@ app.post("/api/pet/ai-reply", async (req, res) => {
     if (err instanceof Error && err.name === "AbortError") {
       sendError("AI 响应超时");
     } else {
-      console.error("[pet/ai-reply] 异常:", err);
+      logger.error('桌宠操作触发AI回复异常', {
+        characterId,
+        context,
+        error: err instanceof Error ? err.message : String(err)
+      });
       sendError("服务器内部错误");
     }
   }
@@ -2089,7 +2073,10 @@ ${recentMessages}`;
     console.log(`[facts] ${characterId}: 提取 ${extracted} 条新事实`);
     res.json({ ok: true, extracted });
   } catch (e) {
-    console.error("[facts/extract] 失败:", e);
+    logger.error('事实提取失败', {
+      characterId,
+      error: e instanceof Error ? e.message : String(e)
+    });
     res.status(500).json({ error: "事实提取失败" });
   }
 });
@@ -2340,7 +2327,11 @@ app.post("/api/send-sticker", async (req, res) => {
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") sendError("AI 响应超时");
     else {
-      console.error("[send-sticker] 异常:", err);
+      logger.error('发送表情包异常', {
+        characterId,
+        stickerId,
+        error: err instanceof Error ? err.message : String(err)
+      });
       sendError("服务器内部错误");
     }
   }
@@ -2352,10 +2343,14 @@ app.post("/api/send-sticker", async (req, res) => {
 app.use(errorHandler);
 
 app.listen(PORT, () => {
-  console.log(`✅ 后端服务已启动: http://localhost:${PORT}`);
-  console.log(`   默认模型: ${DEFAULT_MODEL}`);
-  console.log(`   数据库路径: data/app.db`);
+  logger.info('后端服务已启动', {
+    port: PORT,
+    url: `http://localhost:${PORT}`,
+    defaultModel: DEFAULT_MODEL,
+    databasePath: 'data/app.db'
+  });
 
   // 初始化表情包数据
   initStickers();
+  logger.info('表情包数据初始化完成');
 });

@@ -212,6 +212,13 @@ npm run electron:dist
 
 ---
 
+## 📚 相关文档
+
+- [API 接口文档](docs/API.md) - 后端 API 详细说明
+- [架构设计文档](docs/ARCHITECTURE.md) - 系统架构和设计决策
+
+---
+
 ## 📄 License
 
 MIT

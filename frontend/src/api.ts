@@ -1,5 +1,78 @@
 // 前端 API 客户端：与后端通信
 
+// ========== 统一错误处理 ==========
+// 自定义API错误类
+class APIError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+    this.name = 'APIError';
+  }
+}
+
+// 请求重试封装（指数退避）
+async function fetchWithRetry(
+  url: string,
+  options: RequestInit,
+  maxRetries: number = 3
+): Promise<Response> {
+  let lastError: Error | null = null;
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const response = await fetch(url, options);
+      if (!response.ok) {
+        // 尝试解析错误信息
+        let errorMsg = `HTTP ${response.status}`;
+        try {
+          const errData = await response.clone().json();
+          errorMsg = errData.error || errData.message || errorMsg;
+        } catch {
+          // 如果无法解析JSON,使用默认消息
+        }
+        throw new APIError(response.status, errorMsg);
+      }
+      return response;
+    } catch (error) {
+      lastError = error as Error;
+      // 最后一次重试失败时,不再等待
+      if (i < maxRetries - 1) {
+        // 指数退避: 1秒, 2秒, 4秒
+        await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, i)));
+      }
+    }
+  }
+  // 重试全部失败,抛出最后一个错误
+  throw lastError || new Error('请求失败');
+}
+
+// 友好的错误提示转换
+function getFriendlyErrorMessage(error: unknown): string {
+  if (error instanceof APIError) {
+    // 根据状态码提供友好提示
+    switch (error.status) {
+      case 401:
+        return '身份验证失败，请检查API密钥配置';
+      case 403:
+        return '没有权限访问该资源';
+      case 404:
+        return '请求的资源不存在';
+      case 429:
+        return '请求过于频繁，请稍后再试';
+      case 500:
+        return '服务器内部错误，请稍后重试';
+      case 502:
+      case 503:
+      case 504:
+        return '服务暂时不可用，正在重试...';
+      default:
+        return error.message;
+    }
+  }
+  if (error instanceof TypeError && error.message.includes('fetch')) {
+    return '网络连接失败，请检查网络设置';
+  }
+  return error instanceof Error ? error.message : '未知错误';
+}
+
 // ========== 类型定义 ==========
 export interface PersonaSettings {
   name: string;
@@ -222,12 +295,16 @@ export async function streamChat(
   characterId: string,
   callbacks: StreamCallbacks
 ): Promise<void> {
-  const res = await fetch("/api/chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, characterId }),
-  });
-  await consumeSSE(res, callbacks);
+  try {
+    const res = await fetchWithRetry("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, characterId }),
+    });
+    await consumeSSE(res, callbacks);
+  } catch (error) {
+    callbacks.onError(getFriendlyErrorMessage(error));
+  }
 }
 
 // ========== AI 主动发消息（SSE 流式） ==========
@@ -235,12 +312,16 @@ export async function streamProactive(
   characterId: string,
   callbacks: StreamCallbacks
 ): Promise<void> {
-  const res = await fetch("/api/proactive", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ characterId }),
-  });
-  await consumeSSE(res, callbacks);
+  try {
+    const res = await fetchWithRetry("/api/proactive", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ characterId }),
+    });
+    await consumeSSE(res, callbacks);
+  } catch (error) {
+    callbacks.onError(getFriendlyErrorMessage(error));
+  }
 }
 
 // ========== 心情衰减 ==========
@@ -260,18 +341,25 @@ export async function moodDecay(characterId: string): Promise<{
 
 // ========== 角色管理 ==========
 export async function getCharacters(): Promise<Character[]> {
-  const res = await fetch("/api/characters", { cache: "no-store" });
-  if (!res.ok) return [];
-  return res.json();
+  try {
+    const res = await fetchWithRetry("/api/characters", { cache: "no-store" } as RequestInit);
+    return res.json();
+  } catch (error) {
+    console.error('获取角色列表失败:', getFriendlyErrorMessage(error));
+    return []; // 保持原有行为：失败时返回空数组
+  }
 }
 
 export async function getCharacterDetail(id: string): Promise<{
   character: Character;
   conversation: ConversationData;
 }> {
-  const res = await fetch(`/api/characters/${id}`, { cache: "no-store" });
-  if (!res.ok) throw new Error("角色不存在");
-  return res.json();
+  try {
+    const res = await fetchWithRetry(`/api/characters/${id}`, { cache: "no-store" } as RequestInit);
+    return res.json();
+  } catch (error) {
+    throw new Error(getFriendlyErrorMessage(error));
+  }
 }
 
 export async function createCharacter(data: {
@@ -319,9 +407,13 @@ export async function getPersonalityTemplates(): Promise<Record<string, string>>
 
 // ========== Live2D 模型管理 ==========
 export async function getModels(): Promise<Live2DModelInfo[]> {
-  const res = await fetch("/api/models", { cache: "no-store" });
-  if (!res.ok) return [];
-  return res.json();
+  try {
+    const res = await fetchWithRetry("/api/models", { cache: "no-store" } as RequestInit);
+    return res.json();
+  } catch (error) {
+    console.error('获取模型列表失败:', getFriendlyErrorMessage(error));
+    return []; // 保持原有行为：失败时返回空数组
+  }
 }
 
 export async function deleteModel(modelId: string): Promise<void> {
@@ -382,39 +474,51 @@ export function getMoodLevelInfo(mood: number): MoodLevelInfo {
 
 // ========== 桌宠系统 API ==========
 export async function getPetState(characterId: string): Promise<PetStateResponse> {
-  const res = await fetch(`/api/pet/state?characterId=${encodeURIComponent(characterId)}`, { cache: "no-store" });
-  if (!res.ok) throw new Error("获取宠物状态失败");
-  return res.json();
+  try {
+    const res = await fetchWithRetry(`/api/pet/state?characterId=${encodeURIComponent(characterId)}`, { cache: "no-store" } as RequestInit);
+    return res.json();
+  } catch (error) {
+    throw new Error(getFriendlyErrorMessage(error));
+  }
 }
 
 export async function petSign(characterId: string): Promise<PetActionResult> {
-  const res = await fetch("/api/pet/sign", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ characterId }),
-  });
-  if (!res.ok) throw new Error("签到失败");
-  return res.json();
+  try {
+    const res = await fetchWithRetry("/api/pet/sign", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ characterId }),
+    });
+    return res.json();
+  } catch (error) {
+    throw new Error(getFriendlyErrorMessage(error));
+  }
 }
 
 export async function petBuy(characterId: string, itemId: string): Promise<PetActionResult> {
-  const res = await fetch("/api/pet/buy", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ characterId, itemId }),
-  });
-  if (!res.ok) throw new Error("购买失败");
-  return res.json();
+  try {
+    const res = await fetchWithRetry("/api/pet/buy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ characterId, itemId }),
+    });
+    return res.json();
+  } catch (error) {
+    throw new Error(getFriendlyErrorMessage(error));
+  }
 }
 
 export async function petDate(characterId: string, activityId: string): Promise<PetActionResult> {
-  const res = await fetch("/api/pet/date", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ characterId, activityId }),
-  });
-  if (!res.ok) throw new Error("约会失败");
-  return res.json();
+  try {
+    const res = await fetchWithRetry("/api/pet/date", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ characterId, activityId }),
+    });
+    return res.json();
+  } catch (error) {
+    throw new Error(getFriendlyErrorMessage(error));
+  }
 }
 
 export async function petGame(characterId: string, choice: "rock" | "scissors" | "paper"): Promise<PetActionResult> {
@@ -558,9 +662,12 @@ export async function getMoodHistory(characterId: string, days: number = 7): Pro
   history: MoodPoint[];
   days: number;
 }> {
-  const res = await fetch(`/api/mood-history?characterId=${encodeURIComponent(characterId)}&days=${days}`, { cache: "no-store" });
-  if (!res.ok) throw new Error("获取心情历史失败");
-  return res.json();
+  try {
+    const res = await fetchWithRetry(`/api/mood-history?characterId=${encodeURIComponent(characterId)}&days=${days}`, { cache: "no-store" } as RequestInit);
+    return res.json();
+  } catch (error) {
+    throw new Error(getFriendlyErrorMessage(error));
+  }
 }
 
 // ========== 成就系统 ==========
@@ -611,11 +718,14 @@ export async function getMessages(
   total: number;
   hasMore: boolean;
 }> {
-  const params = new URLSearchParams({ characterId, limit: String(limit) });
-  if (beforeId && beforeId > 0) params.set("beforeId", String(beforeId));
-  const res = await fetch(`/api/messages?${params.toString()}`, { cache: "no-store" });
-  if (!res.ok) throw new Error("获取消息失败");
-  return res.json();
+  try {
+    const params = new URLSearchParams({ characterId, limit: String(limit) });
+    if (beforeId && beforeId > 0) params.set("beforeId", String(beforeId));
+    const res = await fetchWithRetry(`/api/messages?${params.toString()}`, { cache: "no-store" } as RequestInit);
+    return res.json();
+  } catch (error) {
+    throw new Error(getFriendlyErrorMessage(error));
+  }
 }
 
 // ========== 消息全文搜索 ==========
@@ -732,13 +842,16 @@ export async function testConnection(config: {
   apiModel: string;
   apiUrl: string;
 }): Promise<{ ok: boolean; latency?: number; model?: string; error?: string }> {
-  const res = await fetch("/api/test-connection", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(config),
-  });
-  if (!res.ok) throw new Error("测试请求失败");
-  return res.json();
+  try {
+    const res = await fetchWithRetry("/api/test-connection", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(config),
+    });
+    return res.json();
+  } catch (error) {
+    return { ok: false, error: getFriendlyErrorMessage(error) };
+  }
 }
 
 // ========== 头像上传 ==========
