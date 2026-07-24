@@ -3,11 +3,6 @@ import { Avatar, Button } from "antd";
 import { User, ArrowUp } from "lucide-react";
 import { List } from "react-window";
 
-interface MessageRowProps {
-  index: number;
-  style: React.CSSProperties;
-}
-
 export interface Message {
   role: "user" | "assistant";
   content: string;
@@ -49,7 +44,7 @@ export function cleanAssistantText(text: string): string {
 export default function ChatWindow({ messages, loading, characterName, characterAvatarUrl, userAvatarUrl, hasMore, loadingMore, onLoadMore }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const listRef = useRef<List>(null);
+  const listRef = useRef<{ scrollToRow: (config: { index: number; behavior?: string }) => void }>(null);
   const [listHeight, setListHeight] = useState(600);
 
   // 动态计算列表高度
@@ -69,8 +64,8 @@ export default function ChatWindow({ messages, loading, characterName, character
 
   // 自动滚动到最新消息
   useEffect(() => {
-    if (messages.length > 0) {
-      listRef.current?.scrollToItem(messages.length - 1, 'end');
+    if (messages.length > 0 && listRef.current) {
+      listRef.current.scrollToRow({ index: messages.length - 1, behavior: 'smooth' });
     }
   }, [messages.length]);
 
@@ -99,7 +94,7 @@ export default function ChatWindow({ messages, loading, characterName, character
   }, [messages.length]);
 
   // 虚拟列表的行渲染函数
-  const MessageRow = ({ index, style }: MessageRowProps) => {
+  const MessageRow = ({ index, style }: { index: number; style: React.CSSProperties }) => {
     const msg = messages[index];
     // 解析 [表情包:category:filename] 格式的旧数据 / DB 加载数据
     const stickerMatch = msg.content?.match(/^\[表情包:([^:]+):([^\]]+)\]$/);
@@ -156,14 +151,13 @@ export default function ChatWindow({ messages, loading, characterName, character
       {/* 虚拟列表渲染消息 */}
       {messages.length > 0 ? (
         <List
-          ref={listRef}
+          listRef={listRef}
           height={listHeight}
-          itemCount={messages.length}
-          itemSize={80}
+          rowCount={messages.length}
+          rowHeight={80}
           width="100%"
-        >
-          {MessageRow}
-        </List>
+          rowComponent={MessageRow}
+        />
       ) : (
         <div style={{ 
           display: 'flex', 
