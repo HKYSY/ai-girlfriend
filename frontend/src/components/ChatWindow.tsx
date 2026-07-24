@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Avatar, Button } from "antd";
 import { User, ArrowUp } from "lucide-react";
+import { FixedSizeList as List, ListChildComponentProps } from "react-window";
 
 export interface Message {
   role: "user" | "assistant";
@@ -43,10 +44,14 @@ export function cleanAssistantText(text: string): string {
 export default function ChatWindow({ messages, loading, characterName, characterAvatarUrl, userAvatarUrl, hasMore, loadingMore, onLoadMore }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<List>(null);
 
+  // 自动滚动到最新消息
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading]);
+    if (messages.length > 0) {
+      listRef.current?.scrollToItem(messages.length - 1, 'end');
+    }
+  }, [messages.length]);
 
   const renderAiAvatar = () =>
     characterAvatarUrl ? (
@@ -72,6 +77,45 @@ export default function ChatWindow({ messages, loading, characterName, character
     prevLen.current = messages.length;
   }, [messages.length]);
 
+  // 虚拟列表的行渲染函数
+  const MessageRow = ({ index, style }: ListChildComponentProps) => {
+    const msg = messages[index];
+    // 解析 [表情包:category:filename] 格式的旧数据 / DB 加载数据
+    const stickerMatch = msg.content?.match(/^\[表情包:([^:]+):([^\]]+)\]$/);
+    const inlineSticker = stickerMatch
+      ? {
+          id: -1,
+          url: `/stickers/${stickerMatch[2]}`,
+          category: stickerMatch[1],
+        }
+      : msg.sticker;
+    // sticker-only 消息：有 sticker（用户发的纯表情包 + AI 发的纯表情包都不进气泡，独立成行）
+    const isStickerOnly = !!inlineSticker;
+    
+    return (
+      <div style={style} className={`message-row ${msg.role}${isStickerOnly ? " sticker-only" : ""}`}>
+        {msg.role === "assistant" && renderAiAvatar()}
+        {msg.role === "user" && renderUserAvatar()}
+        {isStickerOnly ? (
+          <div className="message-sticker-only">
+            <img
+              src={inlineSticker!.url}
+              alt={inlineSticker!.category}
+              className="sticker-img-only"
+              onError={(e) => {
+                (e.target as HTMLImageElement).style.display = "none";
+              }}
+            />
+          </div>
+        ) : (
+          <div className={`message ${msg.role}`}>
+            {msg.role === "assistant" ? cleanAssistantText(msg.content) : msg.content}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="chat-window" ref={containerRef}>
       {hasMore && (
@@ -88,41 +132,19 @@ export default function ChatWindow({ messages, loading, characterName, character
           </Button>
         </div>
       )}
-      {messages.map((msg, i) => {
-        // 解析 [表情包:category:filename] 格式的旧数据 / DB 加载数据
-        const stickerMatch = msg.content?.match(/^\[表情包:([^:]+):([^\]]+)\]$/);
-        const inlineSticker = stickerMatch
-          ? {
-              id: -1,
-              url: `/stickers/${stickerMatch[2]}`,
-              category: stickerMatch[1],
-            }
-          : msg.sticker;
-        // sticker-only 消息：有 sticker（用户发的纯表情包 + AI 发的纯表情包都不进气泡，独立成行）
-        const isStickerOnly = !!inlineSticker;
-        return (
-          <div key={i} className={`message-row ${msg.role}${isStickerOnly ? " sticker-only" : ""}`}>
-            {msg.role === "assistant" && renderAiAvatar()}
-            {msg.role === "user" && renderUserAvatar()}
-            {isStickerOnly ? (
-              <div className="message-sticker-only">
-                <img
-                  src={inlineSticker!.url}
-                  alt={inlineSticker!.category}
-                  className="sticker-img-only"
-                  onError={(e) => {
-                    (e.target as HTMLImageElement).style.display = "none";
-                  }}
-                />
-              </div>
-            ) : (
-              <div className={`message ${msg.role}`}>
-                {msg.role === "assistant" ? cleanAssistantText(msg.content) : msg.content}
-              </div>
-            )}
-          </div>
-        );
-      })}
+      {/* 虚拟列表渲染消息 */}
+      {messages.length > 0 && (
+        <List
+          ref={listRef}
+          height={500}
+          itemCount={messages.length}
+          itemSize={80}
+          width="100%"
+          style={{ flex: 1 }}
+        >
+          {MessageRow}
+        </List>
+      )}
       {loading && (
         <div className="message-row assistant">
           {renderAiAvatar()}

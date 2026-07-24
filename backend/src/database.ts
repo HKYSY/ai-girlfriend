@@ -287,6 +287,16 @@ export function initDatabase(): void {
       FOREIGN KEY (stickerId) REFERENCES stickers(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_msg_stickers_msg ON message_stickers(messageId);
+
+    -- 消息表复合索引 - 优化消息查询
+    CREATE INDEX IF NOT EXISTS idx_msg_char_hidden_time ON messages(characterId, hidden, createdAt DESC);
+    CREATE INDEX IF NOT EXISTS idx_msg_char_role_hidden ON messages(characterId, role, hidden);
+
+    -- 心情历史表复合索引 - 优化心情查询
+    CREATE INDEX IF NOT EXISTS idx_mood_char_time ON mood_history(characterId, timestamp DESC);
+
+    -- 日记表复合索引 - 优化日记查询
+    CREATE INDEX IF NOT EXISTS idx_diary_char_time ON diary(characterId, date DESC);
   `);
 
   console.log("[db] 数据库初始化完成:", DB_PATH);

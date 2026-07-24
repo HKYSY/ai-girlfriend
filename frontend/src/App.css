@@ -1625,3 +1625,46 @@ body::after {
 .sticker-img-only:hover {
   transform: scale(1.05);
 }
+
+/* ========== Live2D Skeleton Loading ========== */
+.live2d-skeleton {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  background: linear-gradient(90deg, oklch(0.96 0.02 10 / 0.60) 25%, oklch(0.94 0.02 10 / 0.80) 50%, oklch(0.96 0.02 10 / 0.60) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-loading 1.5s infinite;
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+}
+
+@keyframes skeleton-loading {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.skeleton-text {
+  width: 60%;
+  height: 20px;
+  background: oklch(0.92 0.02 10 / 0.80);
+  border-radius: var(--radius-sm);
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+}
+
+.skeleton-circle {
+  width: 80px;
+  height: 80px;
+  background: oklch(0.92 0.02 10 / 0.80);
+  border-radius: 50%;
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+  animation-delay: 0.3s;
+}
+
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.6; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.05); }
+}

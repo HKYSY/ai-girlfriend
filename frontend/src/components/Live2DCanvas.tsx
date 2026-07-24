@@ -136,6 +136,11 @@ export default function Live2DCanvas({
   onPositionChangeRef.current = onPositionChange;
 
   const [loading, setLoading] = useState(true);
+  // 懒加载状态
+  const [modelLoaded, setModelLoaded] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  // 已加载的动作列表
+  const loadedMotionsRef = useRef<string[]>([]);
   const [feedback, setFeedback] = useState<{ id: number; text: string } | null>(
     null
   );
@@ -204,8 +209,33 @@ export default function Live2DCanvas({
     });
   }, []);
 
-  // 加载 Live2D 模型
+  // 使用 IntersectionObserver 实现懒加载
   useEffect(() => {
+    // 如果模型已加载，不再重复加载
+    if (modelLoaded) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && !modelLoaded) {
+          // 开始加载模型
+          setModelLoaded(true);
+          setIsLoading(true);
+        }
+      },
+      { threshold: 0.1 }
+    );
+
+    if (containerRef.current) {
+      observer.observe(containerRef.current);
+    }
+
+    return () => observer.disconnect();
+  }, [modelLoaded]);
+
+  // 加载 Live2D 模型（仅在 modelLoaded 为 true 时执行）
+  useEffect(() => {
+    if (!modelLoaded) return;
+
     let app: PIXI.Application | null = null;
     let destroyed = false;
     let cleanupHandlers: (() => void) | null = null;
@@ -325,6 +355,7 @@ export default function Live2DCanvas({
         app.stage.addChild(model);
         modelRef.current = model;
         setLoading(false);
+        setIsLoading(false); // 懒加载完成
 
         // 每帧更新 overlay div 位置（跟随模型）+ 气泡位置 + 视线跟随控制
         app.ticker.add(() => {
@@ -422,7 +453,7 @@ export default function Live2DCanvas({
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modelUrl]);
+  }, [modelUrl, modelLoaded]);
 
   // 监听 visible 变化，动态控制 canvas 显示/隐藏（不卸载，保持模型加载状态）
   useEffect(() => {
@@ -547,10 +578,24 @@ export default function Live2DCanvas({
     return () => clearTimeout(timer);
   }, [feedback]);
 
+  // 动作按需加载函数（只预加载Idle，其他动作首次使用时加载）
+  const loadMotionIfNeeded = useCallback(async (motionName: string) => {
+    if (!loadedMotionsRef.current.includes(motionName)) {
+      // 动作会在首次使用时自动加载，这里只记录已加载状态
+      loadedMotionsRef.current.push(motionName);
+    }
+  }, []);
+
   // 播放指定动作组（强制重新播放，解决重复点击无反应）
-  const playMotion = (group: string) => {
+  const playMotion = useCallback(async (group: string) => {
     const model = modelRef.current;
     if (!model) return;
+
+    // 按需加载动作（除Idle外）
+    if (group !== "Idle") {
+      await loadMotionIfNeeded(group);
+    }
+
     try {
       // 先停止当前动作，避免残影
       model.stopMotions();
@@ -566,7 +611,7 @@ export default function Live2DCanvas({
       // 忽略
     }
     setActiveMotion(group);
-  };
+  }, [loadMotionIfNeeded]);
 
   // 切换普通表情
   const playExpression = (name: string) => {
@@ -719,7 +764,15 @@ export default function Live2DCanvas({
         ref={containerRef}
         style={{ width: "100%", height: "100%", position: "relative" }}
       >
-        {loading && <div className="stage-loading">她正在准备…</div>}
+        {/* 骨架屏：模型加载前显示 */}
+        {isLoading && !modelLoaded && (
+          <div className="live2d-skeleton">
+            <div className="skeleton-text" />
+            <div className="skeleton-circle" />
+          </div>
+        )}
+        {/* 加载完成后的提示 */}
+        {loading && modelLoaded && <div className="stage-loading">她正在准备…</div>}
       </div>
 
       {/* 心情光晕（模型背后，颜色随心情变化） */}
