@@ -44,7 +44,14 @@ export function cleanAssistantText(text: string): string {
 export default function ChatWindow({ messages, loading, characterName, characterAvatarUrl, userAvatarUrl, hasMore, loadingMore, onLoadMore }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const listRef = useRef<{ scrollToRow: (config: { index: number; behavior?: string }) => void }>(null);
+  const listRef = useRef<{
+    readonly element: HTMLDivElement | null;
+    scrollToRow: (config: {
+      align?: "center" | "end" | "start" | "auto" | "smart";
+      behavior?: "smooth" | "auto" | "instant";
+      index: number;
+    }) => void;
+  }>(null);
   const [listHeight, setListHeight] = useState(600);
 
   // 动态计算列表高度
@@ -150,13 +157,14 @@ export default function ChatWindow({ messages, loading, characterName, character
       )}
       {/* 虚拟列表渲染消息 */}
       {messages.length > 0 ? (
-        <List
+        <List<{}, "div">
           listRef={listRef}
-          height={listHeight}
+          defaultHeight={listHeight}
           rowCount={messages.length}
           rowHeight={80}
-          width="100%"
           rowComponent={MessageRow}
+          rowProps={{}}
+          style={{ width: '100%', height: listHeight }}
         />
       ) : (
         <div style={{ 
