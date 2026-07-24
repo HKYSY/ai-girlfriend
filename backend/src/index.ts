@@ -2342,15 +2342,21 @@ app.post("/api/send-sticker", async (req, res) => {
 // 错误处理中间件（必须放在所有路由之后）
 app.use(errorHandler);
 
-app.listen(PORT, () => {
-  logger.info('后端服务已启动', {
-    port: PORT,
-    url: `http://localhost:${PORT}`,
-    defaultModel: DEFAULT_MODEL,
-    databasePath: 'data/app.db'
-  });
+// 仅在非测试环境下启动服务器（避免测试时端口冲突）
+if (process.env.NODE_ENV !== 'test') {
+  app.listen(PORT, () => {
+    logger.info('后端服务已启动', {
+      port: PORT,
+      url: `http://localhost:${PORT}`,
+      defaultModel: DEFAULT_MODEL,
+      databasePath: 'data/app.db'
+    });
 
-  // 初始化表情包数据
-  initStickers();
-  logger.info('表情包数据初始化完成');
-});
+    // 初始化表情包数据
+    initStickers();
+    logger.info('表情包数据初始化完成');
+  });
+}
+
+// 仅用于测试，导出 app 实例
+export default app;
