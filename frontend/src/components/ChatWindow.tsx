@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Avatar, Button } from "antd";
 import { User, ArrowUp } from "lucide-react";
-// @ts-ignore - react-window类型定义不完整
-import { FixedSizeList } from "react-window";
+import { List } from "react-window";
 
 interface MessageRowProps {
   index: number;
@@ -50,7 +49,7 @@ export function cleanAssistantText(text: string): string {
 export default function ChatWindow({ messages, loading, characterName, characterAvatarUrl, userAvatarUrl, hasMore, loadingMore, onLoadMore }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const listRef = useRef<FixedSizeList>(null);
+  const listRef = useRef<List>(null);
   const [listHeight, setListHeight] = useState(600);
 
   // 动态计算列表高度
@@ -156,7 +155,7 @@ export default function ChatWindow({ messages, loading, characterName, character
       )}
       {/* 虚拟列表渲染消息 */}
       {messages.length > 0 ? (
-        <FixedSizeList
+        <List
           ref={listRef}
           height={listHeight}
           itemCount={messages.length}
@@ -164,7 +163,7 @@ export default function ChatWindow({ messages, loading, characterName, character
           width="100%"
         >
           {MessageRow}
-        </FixedSizeList>
+        </List>
       ) : (
         <div style={{ 
           display: 'flex', 
