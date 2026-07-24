@@ -51,6 +51,22 @@ export default function ChatWindow({ messages, loading, characterName, character
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<FixedSizeList>(null);
+  const [listHeight, setListHeight] = useState(600);
+
+  // 动态计算列表高度
+  useEffect(() => {
+    const updateHeight = () => {
+      if (containerRef.current) {
+        const containerHeight = containerRef.current.clientHeight;
+        // 减去加载更多按钮和加载状态的高度
+        setListHeight(Math.max(containerHeight - 100, 400));
+      }
+    };
+
+    updateHeight();
+    window.addEventListener('resize', updateHeight);
+    return () => window.removeEventListener('resize', updateHeight);
+  }, []);
 
   // 自动滚动到最新消息
   useEffect(() => {
@@ -139,17 +155,27 @@ export default function ChatWindow({ messages, loading, characterName, character
         </div>
       )}
       {/* 虚拟列表渲染消息 */}
-      {messages.length > 0 && (
+      {messages.length > 0 ? (
         <FixedSizeList
           ref={listRef}
-          height={500}
+          height={listHeight}
           itemCount={messages.length}
           itemSize={80}
           width="100%"
-          style={{ flex: 1 }}
         >
           {MessageRow}
         </FixedSizeList>
+      ) : (
+        <div style={{ 
+          display: 'flex', 
+          alignItems: 'center', 
+          justifyContent: 'center', 
+          height: '100%',
+          color: '#999',
+          fontSize: '14px'
+        }}>
+          开始和她聊天吧~ 👋
+        </div>
       )}
       {loading && (
         <div className="message-row assistant">
